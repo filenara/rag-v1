@@ -7,9 +7,13 @@ faiss-cpu
 pymupdf
 qwen-vl-utils
 rank_bm25
-gradio
 chromadb
 torch
 numpy
 Pillow
 langchain
+streamlit
+streamlit-authenticator
+PyYAML
+passlib
+bcrypt

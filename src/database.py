@@ -1,52 +1,41 @@
-import os
-import shutil
 import chromadb
-from sentence_transformers import SentenceTransformer
-from config.settings import cfg
+from chromadb.config import Settings
+import os
+from src.utils import load_config
 
-class VectorStoreManager:
-    def __init__(self, persist_dir="./chroma_db_data", reset_db=False):
-        self.persist_dir = persist_dir
+cfg = load_config()
+
+class DatabaseManager:
+    def __init__(self):
+        # Ayarlardaki yola göre veritabanını başlat
+        persist_path = cfg['vector_db']['persist_path']
         
-        # Eğer sıfırdan başlamak isteniyorsa klasörü sil
-        if reset_db and os.path.exists(self.persist_dir):
-            shutil.rmtree(self.persist_dir)
+        # Klasör yoksa oluştur
+        if not os.path.exists(persist_path):
+            os.makedirs(persist_path)
             
-        # Embedding modeli (CPU/GPU ayarı config'den gelir)
-        print(f"Embedding Modeli Yükleniyor: {cfg.DEVICE}")
-        self.embedder = SentenceTransformer(cfg.EMBED_MODEL, device=cfg.DEVICE)
-        
-        # ChromaDB İstemcisi
-        self.client = chromadb.PersistentClient(path=self.persist_dir)
-        self.collection = self.client.get_or_create_collection(
-            name="rag_collection",
+        self.client = chromadb.PersistentClient(path=persist_path)
+
+    def list_collections(self):
+        """Sistemdeki tüm döküman setlerini listeler."""
+        try:
+            cols = self.client.list_collections()
+            return [c.name for c in cols]
+        except Exception as e:
+            print(f"DB Hatası: {e}")
+            return []
+
+    def get_collection(self, name):
+        """Belirli bir döküman koleksiyonunu getirir."""
+        return self.client.get_or_create_collection(
+            name=name,
             metadata={"hnsw:space": "cosine"}
         )
-
-    def add_documents(self, chunks, metadatas):
-        if not chunks:
-            return 0
-            
-        # Embedding oluştur
-        embeddings = self.embedder.encode(chunks, batch_size=32, show_progress_bar=True).tolist()
-        
-        # ID oluştur (Mevcut sayı üzerinden devam et)
-        current_count = self.collection.count()
-        ids = [str(current_count + i) for i in range(len(chunks))]
-        
-        # Veritabanına ekle
-        self.collection.add(
-            documents=chunks,
-            embeddings=embeddings,
-            metadatas=metadatas,
-            ids=ids
-        )
-        return len(chunks)
-
-    def query_similar(self, query_text, n_results=5):
-        query_vec = self.embedder.encode([query_text]).tolist()
-        results = self.collection.query(
-            query_embeddings=query_vec,
-            n_results=n_results
-        )
-        return results
+    
+    def delete_collection(self, name):
+        """Koleksiyonu siler (Admin için)."""
+        try:
+            self.client.delete_collection(name)
+            return True
+        except:
+            return False

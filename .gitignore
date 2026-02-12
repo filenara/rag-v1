@@ -1,6 +1,25 @@
-.venv/
+# Python Geçiçi Dosyaları
 __pycache__/
+*.py[cod]
+*$py.class
+
+# Sanal Ortam (Sakın gönderme!)
+.venv/
+venv/
+env/
+
+# Veritabanı (Lokalde kalmalı)
 chroma_db_data/
+*.sqlite3
+
+# Test Dosyaları (PDF'ler gitmesin)
 *.pdf
-.env
+*.png
+*.jpg
+
+# Güvenlik (Opsiyonel: Şifre dosyasını gizlemek istersen aç)
+# config/secrets.yaml
+
+# Sistem Dosyaları
 .DS_Store
+Thumbs.db

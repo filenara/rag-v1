@@ -1,0 +1,11 @@
+{
+  "forbidden_words": {
+    "utilize": "use",
+    "commence": "start",
+    "terminate": "stop",
+    "prior to": "before",
+    "subsequently": "after",
+    "in the event of": "if",
+    "carry out": "perform"
+  }
+}
