@@ -4,27 +4,18 @@ app:
   welcome_message: "Kurumsal teknik döküman asistanına hoş geldiniz."
 
 system:
-  use_mock_llm: true          # TRUE = Senin PC (Hızlı), FALSE = Production (GPU)
-  gpu_allocation: "auto"      # auto, cuda:0, cuda:1
+  use_mock_llm: true
+  gpu_allocation: "auto"
   log_level: "INFO"
-  device: "auto"              # Kodda torch.cuda.is_available() kontrolü yapacağız
+  device: "cpu"
+
+vector_db:
+  persist_path: "./chroma_db_data"
+  collection_prefix: "doc_"
 
 model:
   llm_id: "Qwen/Qwen2.5-VL-7B-Instruct"
   embed_model: "BAAI/bge-m3"
-  rerank_model: "BAAI/bge-reranker-v2-m3"
-
-processing:
-  chunk_size: 2000            # Eski kodundaki değer
-  chunk_overlap: 400          # Eski kodundaki değer
-  image_dpi: 150
-  min_image_dim: 200
-
-retrieval:
-  initial_top_k: 15
-  final_top_k: 3
-  vector_spam_limit: 600
-  collection_prefix: "doc_"   # ChromaDB koleksiyonları için ön ek
 
 generation:
   max_tokens: 512

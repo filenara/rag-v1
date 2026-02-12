@@ -1,76 +1,65 @@
 import os
-import fitz  # PyMuPDF
-from sentence_transformers import SentenceTransformer
+import fitz
+import torch
 from src.database import DatabaseManager
-from src.utils import load_config
+from src.miner import CompositeVisualMiner
+from langchain.text_splitter import RecursiveCharacterTextSplitter
+from sentence_transformers import SentenceTransformer
 
-# Ayarları yükle
-cfg = load_config()
+# GPU Kontrolü (Sadece Kaggle'da çalışsın diye)
+DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
-def ingest_pdf(file_path, collection_name):
-    print(f"🔄 İŞLEM BAŞLIYOR: {file_path}")
+def ingest_pdf_advanced(file_path, collection_name):
+    print(f"🚀 İŞLEM BAŞLIYOR: {file_path} (Cihaz: {DEVICE})")
     
-    # 1. Veritabanı Bağlantısı
+    # 1. Veritabanı ve Embedder
     db = DatabaseManager()
-    
-    # Koleksiyon varsa silip baştan oluşturalım (Temiz başlangıç için)
-    # Gerçek hayatta append (ekleme) yapmak isteyebilirsin
-    try:
-        db.delete_collection(collection_name)
-        print(f"🗑️ Eski '{collection_name}' koleksiyonu silindi.")
-    except:
-        pass
-        
     col = db.get_collection(collection_name)
+    embedder = SentenceTransformer('BAAI/bge-m3', device=DEVICE)
     
-    # 2. Embedding Modeli (CPU için hafif model)
-    # Production'da burası BGE-M3 olacak
-    print("🧠 Embedding modeli yükleniyor (all-MiniLM-L6-v2)...")
-    embedder = SentenceTransformer('all-MiniLM-L6-v2')
-
-    # 3. PDF Okuma
+    # 2. Miner (Görsel Kazıyıcı)
+    miner = CompositeVisualMiner()
+    
+    # 3. PDF Okuma ve Analiz
     doc = fitz.open(file_path)
-    documents = []
-    metadatas = []
-    ids = []
-    
-    print(f"📄 Toplam {len(doc)} sayfa okunuyor...")
+    full_text_content = ""
     
     for i, page in enumerate(doc):
+        print(f"📄 Sayfa {i+1} işleniyor...")
+        
+        # A) Metni Al
         text = page.get_text()
         
-        # Sadece dolu sayfaları al
-        if len(text.strip()) > 50:
-            # Basit chunking (Sayfa bazlı)
-            # İlerde burayı RecursiveCharacterTextSplitter ile yapacağız
-            documents.append(text)
-            metadatas.append({"source": file_path, "page": i + 1})
-            ids.append(f"{collection_name}_p{i}")
-
-    # 4. Vektörleştirme ve Kayıt
-    if documents:
-        print(f"📊 {len(documents)} parça vektörleştiriliyor...")
-        embeddings = embedder.encode(documents).tolist()
+        # B) Görselleri Al
+        images = miner.extract_visual_crops(page)
+        visual_text = ""
         
-        col.add(
-            documents=documents,
-            embeddings=embeddings,
-            metadatas=metadatas,
-            ids=ids
-        )
-        print(f"✅ BAŞARILI! '{collection_name}' koleksiyonuna {len(documents)} parça eklendi.")
-    else:
-        print("❌ HATA: PDF'ten anlamlı metin çıkarılamadı.")
+        if images and DEVICE == "cuda":
+            # Burası sadece GPU varsa çalışır! Resimlere caption yazar.
+            # Localde hata vermemesi için pass geçiyoruz.
+            visual_text = f"\n[Görsel Tespit Edildi: {len(images)} adet. Analiz için Qwen-VL gerekli.]\n"
+        
+        page_content = f"--- PAGE {i+1} ---\n{visual_text}\n{text}\n"
+        full_text_content += page_content
+
+    # 4. Akıllı Bölme (Chunking)
+    print("🔪 Metin parçalanıyor...")
+    splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
+    chunks = splitter.split_text(full_text_content)
+    
+    # 5. Embedding ve Kayıt
+    print(f"📊 {len(chunks)} parça vektörleştiriliyor...")
+    embeddings = embedder.encode(chunks, show_progress_bar=True).tolist()
+    
+    ids = [f"chunk_{i}" for i in range(len(chunks))]
+    metadatas = [{"source": file_path, "page": 0} for _ in chunks] # Basitlik için sayfa 0
+    
+    col.add(documents=chunks, embeddings=embeddings, ids=ids, metadatas=metadatas)
+    print("✅ Yükleme Tamamlandı!")
 
 if __name__ == "__main__":
-    # Test için burayı elle değiştirip çalıştırabilirsin
-    # Örnek: python admin_ingest.py
-    
-    # Kullanıcıya soralım
-    pdf_path = input("Yüklenecek PDF yolunu girin (örn: test.pdf): ")
-    col_name = input("Koleksiyon adı ne olsun? (örn: cihaz_bakim): ")
-    
+    pdf_path = "test.pdf"
     if os.path.exists(pdf_path):
-        ingest_pdf(pdf_path, col_name)
+        ingest_pdf_advanced(pdf_path, "doc_default")
     else:
-        print("Dosya bulunamadı!")
+        print("Dosya bulunamadı.")
