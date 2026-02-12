@@ -1,4 +1,4 @@
-import fitz  # PyMuPDF
+import fitz 
 import io
 from PIL import Image
 
@@ -40,15 +40,15 @@ class CompositeVisualMiner:
 
     def extract_visual_crops(self, page):
         all_visual_rects = []
-
-        # 1. Resimleri Bul
+        
+        # Resimleri al
         images = page.get_images(full=True)
         for img in images:
             rect = page.get_image_bbox(img)
             if (rect.width > 50 and rect.height > 50):
                 all_visual_rects.append(list(rect))
                 
-        # 2. Çizimleri (Tabloları) Bul
+        # Çizimleri (Tabloları) al
         paths = page.get_drawings()
         if len(paths) < self.vector_spam_limit:
             for path in paths:
@@ -58,14 +58,12 @@ class CompositeVisualMiner:
 
         if not all_visual_rects: return []
 
-        # 3. Kutuları Birleştir
         merged_rects = self._merge_boxes(all_visual_rects)
-        
         final_crops = []
+        
         for rect in merged_rects:
             w, h = rect[2]-rect[0], rect[3]-rect[1]
             if w < self.min_width or h < self.min_height: continue
-            
             try:
                 clip_rect = fitz.Rect(rect[0], rect[1], rect[2], rect[3])
                 zoom_factor = 2.5 

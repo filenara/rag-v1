@@ -11,6 +11,12 @@ st.set_page_config(page_title="AI Asistan", layout="wide")
 cfg = load_config()
 secrets = load_secrets()
 
+# --- KRİTİK OPTİMİZASYON: Modeli Önbelleğe Al ---
+# Bu sayede her soruda modelleri tekrar yüklemez, çökme engellenir.
+@st.cache_resource
+def get_rag_engine():
+    return RAGEngine()
+
 # Oturum Durumu (Session State) Başlatma
 if "messages" not in st.session_state:
     st.session_state.messages = []
@@ -35,11 +41,11 @@ if st.session_state["authentication_status"]:
     
     # --- SIDEBAR (SOL MENÜ) ---
     with st.sidebar:
-        st.write(f"👤 **{st.session_state['name']}**")
+        st.write(f"**{st.session_state['name']}**")
         authenticator.logout('Çıkış Yap', 'sidebar')
         st.divider()
         
-        st.header("📂 Döküman Seçimi")
+        st.header("Döküman Seçimi")
         db = DatabaseManager()
         cols = db.list_collections()
         
@@ -52,14 +58,13 @@ if st.session_state["authentication_status"]:
             st.warning("Sistemde yüklü döküman yok. Admin ile görüşün.")
             
         st.divider()
-        st.caption(f"Sistem Modu: {'🛠️ MOCK' if cfg['system']['use_mock_llm'] else '🟢 PRODUCTION'}")
+        st.caption(f"Sistem Modu: {'MOCK' if cfg['system']['use_mock_llm'] else 'PRODUCTION'}")
 
     # --- ANA EKRAN ---
-    st.title(f"🚀 {cfg['app']['name']}")
+    st.title(f"{cfg['app']['name']}")
 
-    # Eğer döküman seçilmediyse uyarı ver
     if not st.session_state.selected_collection:
-        st.info("👋 Başlamak için lütfen sol menüden bir döküman seçiniz.")
+        st.info("Başlamak için lütfen sol menüden bir döküman seçiniz.")
     else:
         # Geçmiş Mesajları Göster
         for message in st.session_state.messages:
@@ -76,37 +81,43 @@ if st.session_state["authentication_status"]:
             # 2. AI Cevabı Hazırlanıyor
             with st.chat_message("assistant"):
                 message_placeholder = st.empty()
-                message_placeholder.markdown("⏳ *Döküman taranıyor ve cevap üretiliyor...*")
+                message_placeholder.markdown("*Döküman taranıyor ve cevap üretiliyor...*")
                 
-                # Motorları Çalıştır
-                engine = RAGEngine()
-                guard = STE100Guard()
-                
-                # Arama ve Cevaplama (Engine)
-                raw_response, sources = engine.search_and_answer(
-                    prompt, 
-                    st.session_state.selected_collection
-                )
-                
-                # STE100 Denetimi (Guard)
-                warnings = guard.check_compliance(raw_response)
-                final_response = raw_response # İstersen guard.apply_corrections(raw_response) yapabilirsin
-                
-                # Cevabı Göster
-                full_response = final_response + "\n\n"
-                if sources:
-                    full_response += "**📚 Kaynaklar:**\n" + "\n".join([f"- {s}" for s in sources])
-                
-                message_placeholder.markdown(full_response)
-                
-                # Uyarıları Göster (Expandable olarak)
-                if warnings:
-                    with st.expander("⚠️ STE100 Uyumluluk Raporu"):
-                        for w in warnings:
-                            st.write(w)
-                
-                # Geçmişe Ekle
-                st.session_state.messages.append({"role": "assistant", "content": full_response})
+                try:
+                    # Motoru önbellekten al (Hız kazandırır ve çöküşü önler)
+                    engine = get_rag_engine()
+                    guard = STE100Guard()
+                    
+                    # Arama ve Cevaplama (History Gönderiliyor)
+                    # used_context artık geçmişe saklanmak üzere geri alınıyor.
+                    raw_response, used_context = engine.search_and_answer(
+                        prompt, 
+                        st.session_state.selected_collection,
+                        history=st.session_state.messages
+                    )
+                    
+                    # STE100 Denetimi
+                    warnings = guard.check_compliance(raw_response)
+                    final_response = raw_response
+                    
+                    # Cevabı Göster
+                    message_placeholder.markdown(final_response)
+                    
+                    if warnings:
+                        with st.expander("⚠️ STE100 Uyumluluk Raporu"):
+                            for w in warnings:
+                                st.write(w)
+                    
+                    # 3. Geçmişe Ekle (Context Metadata ile Birlikte)
+                    st.session_state.messages.append({
+                        "role": "assistant", 
+                        "content": final_response,
+                        "context": used_context # Bir sonraki tur 'tekrar bak' denirse kullanılacak
+                    })
+
+                except Exception as e:
+                    st.error(f"İşlem sırasında bir hata oluştu: {e}")
+                    st.info("Lütfen terminali kontrol edin veya sistemi yeniden başlatın.")
 
 elif st.session_state["authentication_status"] is False:
     st.error('Kullanıcı adı veya şifre hatalı.')
