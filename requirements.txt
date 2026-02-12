@@ -1,0 +1,15 @@
+transformers
+peft
+sentence-transformers
+accelerate
+bitsandbytes
+faiss-cpu
+pymupdf
+qwen-vl-utils
+rank_bm25
+gradio
+chromadb
+torch
+numpy
+Pillow
+langchain
