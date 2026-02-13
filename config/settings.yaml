@@ -3,20 +3,20 @@ app:
   version: "2.0-Alpha"
   welcome_message: "Kurumsal teknik döküman asistanına hoş geldiniz."
 
-system:
-  use_mock_llm: true
-  gpu_allocation: "auto"
-  log_level: "INFO"
-  device: "cpu"
-
 vector_db:
-  persist_path: "./chroma_db_data"
-  collection_prefix: "doc_"
+  persist_path: "./chroma_db"     # Veritabanının kaydedileceği klasör
+  distance_metric: "cosine"
 
-model:
-  llm_id: "Qwen/Qwen2.5-VL-7B-Instruct"
-  embed_model: "BAAI/bge-m3"
+models:
+  device: "cuda"                  # "cpu" veya "cuda"
+  vision_model: "Qwen/Qwen2.5-VL-7B-Instruct"
+  embedding_model: "BAAI/bge-m3"
+  reranker_model: "BAAI/bge-reranker-v2-m3"
 
-generation:
-  max_tokens: 512
-  temperature: 0.1
+ingestion:
+  chunk_size: 1000
+  chunk_overlap: 200
+  batch_size: 10
+
+system:
+  use_mock_llm: false

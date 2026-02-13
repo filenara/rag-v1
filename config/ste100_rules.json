@@ -1,11 +1,19 @@
 {
   "forbidden_words": {
     "utilize": "use",
+    "attempt": "try",
+    "facilitate": "help",
     "commence": "start",
-    "terminate": "stop",
+    "terminate": "end",
     "prior to": "before",
     "subsequently": "after",
-    "in the event of": "if",
-    "carry out": "perform"
+    "demonstrate": "show",
+    "impact": "affect",
+    "modification": "change",
+    "monitor": "check",
+    "initiate": "start",
+    "optimal": "best",
+    "component": "part",
+    "functionality": "function"
   }
 }

@@ -1,14 +1,14 @@
 import chromadb
-from chromadb.config import Settings
 import os
 from src.utils import load_config
 
-cfg = load_config()
-
 class DatabaseManager:
     def __init__(self):
-        # Ayarlardaki yola göre veritabanını başlat
-        persist_path = cfg['vector_db']['persist_path']
+        # Ayarları yükle
+        self.cfg = load_config()
+        
+        # Veritabanı yolu
+        persist_path = self.cfg['vector_db']['persist_path']
         
         # Klasör yoksa oluştur
         if not os.path.exists(persist_path):
@@ -26,14 +26,20 @@ class DatabaseManager:
             return []
 
     def get_collection(self, name):
-        """Belirli bir döküman koleksiyonunu getirir."""
+        """
+        Belirli bir döküman koleksiyonunu getirir veya oluşturur.
+        Mesafe metriği artık ayarlardan dinamik olarak okunuyor.
+        """
+        # Varsayılan olarak 'cosine' kullanır, ayar yoksa hata vermez.
+        metric = self.cfg['vector_db'].get('distance_metric', 'cosine')
+        
         return self.client.get_or_create_collection(
             name=name,
-            metadata={"hnsw:space": "cosine"}
+            metadata={"hnsw:space": metric}
         )
     
     def delete_collection(self, name):
-        """Koleksiyonu siler (Admin için)."""
+        """Koleksiyonu siler (Admin/Yönetici işlemleri için)."""
         try:
             self.client.delete_collection(name)
             return True
