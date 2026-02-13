@@ -227,22 +227,22 @@ def generate_caption_safe(pil_image, model, processor, attempt=1):
         return description
 
     except torch.cuda.OutOfMemoryError:
-        logger.warning(f"⚠️ GPU Bellek Hatası (OOM) - Deneme {attempt}")
+        logger.warning(f" GPU Bellek Hatası (OOM) - Deneme {attempt}")
         torch.cuda.empty_cache()
         gc.collect()
         
         if attempt < 3:
             # Görseli %50 Küçült ve Tekrar Dene
-            logger.info("♻️ Görsel yeniden boyutlandırılıyor (%50) ve tekrar deneniyor...")
+            logger.info(" Görsel yeniden boyutlandırılıyor (%50) ve tekrar deneniyor...")
             w, h = pil_image.size
             resized_image = pil_image.resize((int(w * 0.5), int(h * 0.5)))
             return generate_caption_safe(resized_image, model, processor, attempt=attempt + 1)
         else:
-            logger.error("❌ OOM: Görsel çok büyük, küçültme işe yaramadı. Atlanıyor.")
+            logger.error(" OOM: Görsel çok büyük, küçültme işe yaramadı. Atlanıyor.")
             return "[ERROR: Image too large for GPU memory]"
             
     except Exception as e:
-        logger.error(f"❌ Beklenmeyen Hata: {e}")
+        logger.error(f" Beklenmeyen Hata: {e}")
         return f"[ERROR: {str(e)}]"
 
 # --- 4. DATA PIPELINE ---
@@ -257,7 +257,7 @@ def save_batch(col, chunks, metadatas, embedder):
         logger.error(f"Veritabanı Yazma Hatası: {e}")
 
 def main_ingest(pdf_paths, collection_name="doc_default"):
-    logger.info(f"🚀 Ingestion Başlatılıyor. Hedef Koleksiyon: {collection_name}")
+    logger.info(f" Ingestion Başlatılıyor. Hedef Koleksiyon: {collection_name}")
     
     # 1. Hazırlık
     checkpoint = CheckpointManager()
@@ -275,21 +275,21 @@ def main_ingest(pdf_paths, collection_name="doc_default"):
         filename = os.path.basename(pdf_path)
         
         if checkpoint.is_processed(filename):
-            logger.info(f"⏭️ ATLANDI (Zaten İşlendi): {filename}")
+            logger.info(f" ATLANDI (Zaten İşlendi): {filename}")
             continue
             
         if not os.path.exists(pdf_path):
-            logger.error(f"❌ Dosya Bulunamadı: {pdf_path}")
+            logger.error(f" Dosya Bulunamadı: {pdf_path}")
             continue
 
         try:
             doc = fitz.open(pdf_path)
             if doc.page_count == 0: raise ValueError("Sayfa sayısı 0")
         except Exception as e:
-            logger.error(f"❌ BOZUK DOSYA: {filename} - {e}")
+            logger.error(f" BOZUK DOSYA: {filename} - {e}")
             continue
 
-        logger.info(f"📂 İşleniyor: {filename} ({doc.page_count} sayfa)")
+        logger.info(f" İşleniyor: {filename} ({doc.page_count} sayfa)")
         
         batch_chunks = []
         batch_metadatas = []
@@ -343,12 +343,12 @@ def main_ingest(pdf_paths, collection_name="doc_default"):
             save_batch(col, batch_chunks, batch_metadatas, embedder)
         
         checkpoint.mark_as_done(filename)
-        logger.info(f"✅ TAMAMLANDI: {filename}")
+        logger.info(f" TAMAMLANDI: {filename}")
         
         gc.collect()
         torch.cuda.empty_cache()
 
-    logger.info("🎉 Tüm işlemler başarıyla tamamlandı.")
+    logger.info("Tüm işlemler başarıyla tamamlandı.")
 
 if __name__ == "__main__":
     # Test klasörü

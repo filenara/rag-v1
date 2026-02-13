@@ -16,7 +16,7 @@ class STE100Guard:
             pattern = re.compile(r'\b' + re.escape(forbidden) + r'\b', re.IGNORECASE)
             
             if pattern.search(text):
-                warnings.append(f"⚠️ STE100 İhlali: '{forbidden}' yerine '{suggested}' kullanılmalı.")
+                warnings.append(f"STE100 İhlali: '{forbidden}' yerine '{suggested}' kullanılmalı.")
         
         return warnings
 

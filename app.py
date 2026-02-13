@@ -13,7 +13,7 @@ from src.database import DatabaseManager
 
 # --- AYARLAR ---
 PAGE_TITLE = "Kurumsal AI Asistan"
-PAGE_ICON = "🤖"
+PAGE_ICON = " "
 HISTORY_LIMIT = 6  # Modelin göreceği son mesaj sayısı (3 Soru + 3 Cevap)
 
 st.set_page_config(page_title=PAGE_TITLE, page_icon=PAGE_ICON, layout="wide")
@@ -83,7 +83,7 @@ if st.session_state["authentication_status"]:
         st.divider()
         
         # 1. Döküman Seçimi
-        st.subheader("📚 Bilgi Bankası")
+        st.subheader("Bilgi Bankası")
         db = DatabaseManager()
         cols = db.list_collections()
         
@@ -103,8 +103,8 @@ if st.session_state["authentication_status"]:
         st.divider()
 
         # 2. Sohbet Yönetimi (Production Level Eklenti)
-        st.subheader("🛠️ Sohbet Araçları")
-        if st.button("🗑️ Sohbeti Temizle", use_container_width=True):
+        st.subheader("Sohbet Araçları")
+        if st.button("Sohbeti Temizle", use_container_width=True):
             reset_chat()
             
         if st.session_state.messages:
@@ -116,7 +116,7 @@ if st.session_state["authentication_status"]:
     st.title(PAGE_TITLE)
 
     if not st.session_state.selected_collection:
-        st.info("👋 Başlamak için lütfen sol menüden çalışmak istediğiniz döküman setini seçiniz.")
+        st.info(" Başlamak için lütfen sol menüden çalışmak istediğiniz döküman setini seçiniz.")
     else:
         # 1. Geçmiş Mesajları Ekrana Bas
         for message in st.session_state.messages:
@@ -147,7 +147,7 @@ if st.session_state["authentication_status"]:
                     # Bu, modelin (Qwen) "context length exceeded" hatası vermesini engeller.
                     recent_history = st.session_state.messages[-HISTORY_LIMIT:]
                     
-                    status_placeholder.write("🤖 Cevap üretiliyor...")
+                    status_placeholder.write(" Cevap üretiliyor...")
                     
                     # RAGEngine'e sınırlı geçmişi gönder
                     raw_response, used_context = engine.search_and_answer(
@@ -166,7 +166,7 @@ if st.session_state["authentication_status"]:
                     
                     # Kaynak ve Uyarıları Göster
                     if used_context or warnings:
-                        with st.expander("📝 Kaynaklar ve Teknik Denetim"):
+                        with st.expander(" Kaynaklar ve Teknik Denetim"):
                             if warnings:
                                 st.warning("STE100 İhlalleri:")
                                 for w in warnings:
