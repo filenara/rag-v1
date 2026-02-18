@@ -1,193 +1,184 @@
 import streamlit as st
 import streamlit_authenticator as stauth
 import yaml
-import json
 import time
-from datetime import datetime
 from yaml.loader import SafeLoader
 
-# --- Kendi Modüllerimiz ---
+# --- KENDİ MODÜLLERİMİZ ---
 from src.rag_engine import RAGEngine
 from src.ste100_guard import STE100Guard
-from src.database import DatabaseManager
+from src.utils import load_config
 
-# --- AYARLAR ---
-PAGE_TITLE = "Kurumsal AI Asistan"
-PAGE_ICON = " "
-HISTORY_LIMIT = 6  # Modelin göreceği son mesaj sayısı (3 Soru + 3 Cevap)
-
-st.set_page_config(page_title=PAGE_TITLE, page_icon=PAGE_ICON, layout="wide")
-
-# --- YARDIMCI FONKSİYONLAR ---
-
-def load_config():
-    with open('config/settings.yaml') as file:
-        return yaml.load(file, Loader=SafeLoader)
-
-def load_secrets():
-    with open('config/secrets.yaml') as file:
-        return yaml.load(file, Loader=SafeLoader)
-
-@st.cache_resource
-def get_rag_engine():
-    """RAGEngine'i bir kere başlatır, cache'ler."""
-    return RAGEngine()
-
-def download_chat_history():
-    """Sohbet geçmişini JSON olarak indirilebilir hale getirir."""
-    chat_data = json.dumps(st.session_state.messages, indent=4, ensure_ascii=False)
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    st.download_button(
-        label="📥 Sohbeti İndir (JSON)",
-        data=chat_data,
-        file_name=f"chat_history_{timestamp}.json",
-        mime="application/json"
-    )
-
-def reset_chat():
-    """Sohbeti güvenli bir şekilde sıfırlar."""
-    st.session_state.messages = []
-    st.session_state.context_memory = [] # RAG Engine için teknik bağlam
-    st.rerun()
-
-# --- BAŞLANGIÇ AYARLARI (SESSION STATE) ---
-if "messages" not in st.session_state:
-    st.session_state.messages = []
-if "selected_collection" not in st.session_state:
-    st.session_state.selected_collection = None
-if "authentication_status" not in st.session_state:
-    st.session_state.authentication_status = None
-
-# --- GÜVENLİK VE GİRİŞ ---
-secrets = load_secrets()
-authenticator = stauth.Authenticate(
-    secrets['credentials'],
-    secrets['cookie']['name'],
-    secrets['cookie']['key'],
-    secrets['cookie']['expiry_days']
+# --- 1. SAYFA AYARLARI ---
+st.set_page_config(
+    page_title="STE100 Technical Assistant",
+    page_icon=" ",
+    layout="wide",
+    initial_sidebar_state="expanded"
 )
 
-try:
-    authenticator.login()
-except Exception as e:
-    st.error(f"Giriş Modülü Hatası: {e}")
+# --- 2. BAŞLATMA VE ÖNBELLEK ---
+@st.cache_resource
+def get_engine():
+    """RAGEngine ağır bir sınıftır, sadece bir kere yüklenir."""
+    return RAGEngine()
 
-# --- ANA UYGULAMA ---
-if st.session_state["authentication_status"]:
+@st.cache_resource
+def get_guard():
+    """STE100Guard hafif ama sürekli regex derlemesin diye cache'liyoruz."""
+    return STE100Guard()
+
+# Global nesneleri çağır
+engine = get_engine()
+guard = get_guard()
+config = load_config()
+
+# Koleksiyon adı (Admin ingest sırasında belirlenen ad)
+COLLECTION_NAME = "doc_kaggle_v1"
+
+# --- 3. KİMLİK DOĞRULAMA (Mevcut yapıyı koruyoruz) ---
+def load_auth():
+    with open('config/secrets.yaml') as file:
+        config_auth = yaml.load(file, Loader=SafeLoader)
     
-    # --- SIDEBAR (SOL MENÜ) ---
+    authenticator = stauth.Authenticate(
+        config_auth['credentials'],
+        config_auth['cookie']['name'],
+        config_auth['cookie']['key'],
+        config_auth['cookie']['expiry_days'],
+        # preauthorized=config_auth['preauthorized'] # Versiyon farkına göre gerekebilir/gerekmeyebilir
+    )
+    return authenticator
+
+authenticator = load_auth()
+
+# Giriş Widget'ı (Streamlit sürümüne göre değişiklik gösterebilir, en güvenli yöntem)
+try:
+    name, authentication_status, username = authenticator.login("main")
+except:
+    name, authentication_status, username = authenticator.login()
+
+# --- 4. ANA UYGULAMA MANTIĞI ---
+
+if authentication_status:
+    # --- SIDEBAR ---
     with st.sidebar:
-        st.title(f"{PAGE_ICON} Kontrol Paneli")
-        st.write(f"Kullanıcı: **{st.session_state['name']}**")
+        st.image("https://cdn-icons-png.flaticon.com/512/6024/6024190.png", width=50)
+        st.title("Admin Panel")
+        st.write(f"Hoşgeldin, **{name}**")
+        st.divider()
+        
+        # Ayarlar
+        st.subheader(" Sistem Durumu")
+        st.success(" RAG Motoru: Aktif")
+        st.success(" STE100 Denetimi: Aktif")
+        st.info(f"Veri Seti: {COLLECTION_NAME}")
+        
+        if st.button("Sohbeti Temizle", type="primary"):
+            st.session_state.messages = []
+            st.rerun()
+            
+        st.divider()
         authenticator.logout('Çıkış Yap', 'sidebar')
-        st.divider()
-        
-        # 1. Döküman Seçimi
-        st.subheader("Bilgi Bankası")
-        db = DatabaseManager()
-        cols = db.list_collections()
-        
-        if cols:
-            selected = st.selectbox(
-                "Aktif Döküman Seti:", 
-                cols, 
-                index=None, 
-                placeholder="Bir kaynak seçiniz..."
-            )
-            if selected:
-                st.session_state.selected_collection = selected
-                st.success(f"Bağlı: {selected}")
-        else:
-            st.warning("Sistemde yüklü döküman bulunamadı.")
+
+    # --- ANA EKRAN ---
+    st.title("🛠️ In-House Technical Support AI")
+    st.caption("Simplified Technical English (ASD-STE100) Compliance Enforced")
+
+    # Sohbet Geçmişi Başlatma
+    if "messages" not in st.session_state:
+        st.session_state.messages = []
+
+    # Geçmiş Mesajları Göster
+    for msg in st.session_state.messages:
+        with st.chat_message(msg["role"]):
+            # Eğer mesajda görsel varsa göster
+            if "image" in msg:
+                st.image(msg["image"], caption="Uploaded Image", width=300)
             
-        st.divider()
-
-        # 2. Sohbet Yönetimi (Production Level Eklenti)
-        st.subheader("Sohbet Araçları")
-        if st.button("Sohbeti Temizle", use_container_width=True):
-            reset_chat()
+            st.markdown(msg["content"])
             
-        if st.session_state.messages:
-            download_chat_history()
-
-        st.caption("v1.2.0 - In-House Production")
-
-    # --- ANA EKRAN (CHAT ARAYÜZÜ) ---
-    st.title(PAGE_TITLE)
-
-    if not st.session_state.selected_collection:
-        st.info(" Başlamak için lütfen sol menüden çalışmak istediğiniz döküman setini seçiniz.")
-    else:
-        # 1. Geçmiş Mesajları Ekrana Bas
-        for message in st.session_state.messages:
-            with st.chat_message(message["role"]):
-                st.markdown(message["content"])
-                # Eğer mesajda STE100 uyarısı veya kaynak varsa expander ile gösterilebilir (Opsiyonel)
-
-        # 2. Yeni Kullanıcı Girişi
-        if prompt := st.chat_input("Teknik sorunuzu buraya yazın..."):
-            
-            # Kullanıcı mesajını ekle
-            st.session_state.messages.append({"role": "user", "content": prompt})
-            with st.chat_message("user"):
-                st.markdown(prompt)
-
-            # AI Cevabı Hazırlanıyor
-            with st.chat_message("assistant"):
-                message_placeholder = st.empty()
-                status_placeholder = st.status("Analiz ediliyor...", expanded=True)
+            # Eğer bu bir asistan cevabıysa ve içinde rapor varsa (context/warnings) expander ile göster
+            if msg.get("is_report", False):
+                status_color = "red" if msg.get("warnings") else "green"
+                status_icon = "Uyarı" if msg.get("warnings") else "Sorunsuz"
+                status_title = "STE100 Uyarıları Mevcut" if msg.get("warnings") else "STE100 Uyumlu"
                 
-                try:
-                    status_placeholder.write("🔍 Dökümanlar taranıyor...")
-                    engine = get_rag_engine()
-                    guard = STE100Guard()
+                with st.expander(f"{status_icon} Teknik Rapor & Kaynaklar ({status_title})"):
+                    # 1. STE100 Uyarıları
+                    if msg.get("warnings"):
+                        st.error("Tespit Edilen İhlaller:")
+                        for w in msg["warnings"]:
+                            st.write(f"- {w}")
+                    else:
+                        st.success("Bu cevap STE100 kelime standartlarına uygundur.")
                     
-                    # --- PRODUCTION CRITICAL: SLIDING WINDOW ---
-                    # Tüm geçmişi değil, sadece son N mesajı gönderiyoruz.
-                    # Bu, modelin (Qwen) "context length exceeded" hatası vermesini engeller.
-                    recent_history = st.session_state.messages[-HISTORY_LIMIT:]
-                    
-                    status_placeholder.write(" Cevap üretiliyor...")
-                    
-                    # RAGEngine'e sınırlı geçmişi gönder
-                    raw_response, used_context = engine.search_and_answer(
-                        prompt, 
-                        st.session_state.selected_collection,
-                        history=recent_history
-                    )
-                    
-                    # STE100 Denetimi
-                    warnings = guard.check_compliance(raw_response)
-                    
-                    status_placeholder.update(label="Tamamlandı!", state="complete", expanded=False)
-                    
-                    # Cevabı Göster
-                    message_placeholder.markdown(raw_response)
-                    
-                    # Kaynak ve Uyarıları Göster
-                    if used_context or warnings:
-                        with st.expander(" Kaynaklar ve Teknik Denetim"):
-                            if warnings:
-                                st.warning("STE100 İhlalleri:")
-                                for w in warnings:
-                                    st.write(f"- {w}")
-                            
-                            st.markdown("**Kullanılan Bağlam:**")
-                            st.caption(used_context[:500] + "..." if len(used_context) > 500 else used_context)
-                    
-                    # Geçmişe Kaydet
-                    st.session_state.messages.append({
-                        "role": "assistant", 
-                        "content": raw_response,
-                        "context": used_context # İleride "buna tekrar bak" denirse kullanılacak
-                    })
+                    # 2. Kullanılan Context
+                    st.divider()
+                    st.markdown("**Referans Alınan Teknik Döküman:**")
+                    st.info(msg.get("context_text", "Context bulunamadı."))
 
-                except Exception as e:
-                    status_placeholder.update(label="Hata Oluştu", state="error")
-                    st.error(f"Sistem Hatası: {e}")
-                    # Hata loglaması için buraya logging eklenebilir
+    # --- KULLANICI GİRİŞİ ---
+    if prompt := st.chat_input("Teknik sorunuzu buraya yazın..."):
+        # 1. Kullanıcı Mesajını Ekrana Bas
+        st.session_state.messages.append({"role": "user", "content": prompt})
+        with st.chat_message("user"):
+            st.markdown(prompt)
 
-elif st.session_state["authentication_status"] is False:
+        # 2. Asistan Cevabını Üret
+        with st.chat_message("assistant"):
+            # UI Animasyonu
+            status_container = st.status("Analiz ediliyor...", expanded=True)
+            
+            try:
+                # A) Arama ve Üretim (YAML Promptlar devrede)
+                status_container.write("Teknik dökümanlar taranıyor (Hybrid Search)...")
+                response_text, context_text = engine.search_and_answer(
+                    query=prompt, 
+                    collection_name=COLLECTION_NAME,
+                    history=st.session_state.messages
+                )
+                
+                # B) STE100 Denetimi (Guard devrede)
+                status_container.write("STE100 uyumluluk kontrolü yapılıyor...")
+                warnings = guard.check_compliance(response_text)
+                
+                status_container.update(label="Tamamlandı", state="complete", expanded=False)
+
+                # C) Cevabı Yazdır
+                st.markdown(response_text)
+                
+                # D) Rapor Alanı (Expander)
+                # İkon ve renk belirleme
+                has_warning = len(warnings) > 0
+                expander_title = "STE100 Denetim Raporu (İhlal Var)" if has_warning else "Teknik Rapor (Uyumlu)"
+                
+                with st.expander(expander_title, expanded=has_warning):
+                    if has_warning:
+                        st.error(f"Bu cevapta {len(warnings)} adet STE100 ihlali tespit edildi:")
+                        for w in warnings:
+                            st.markdown(f" {w}")
+                    else:
+                        st.success("Kelime kullanımı ASD-STE100 sözlüğüne uygundur.")
+                        
+                    st.markdown("---")
+                    st.caption("**Kullanılan Bağlam (Context):**")
+                    st.text(context_text[:1000] + "..." if len(context_text) > 1000 else context_text)
+
+                # 3. Geçmişe Kaydet
+                st.session_state.messages.append({
+                    "role": "assistant",
+                    "content": response_text,
+                    "is_report": True,
+                    "warnings": warnings,
+                    "context_text": context_text
+                })
+
+            except Exception as e:
+                status_container.update(label="Hata", state="error")
+                st.error(f"Bir hata oluştu: {str(e)}")
+
+elif authentication_status is False:
     st.error('Kullanıcı adı veya şifre hatalı.')
-elif st.session_state["authentication_status"] is None:
+elif authentication_status is None:
     st.warning('Lütfen giriş yapınız.')

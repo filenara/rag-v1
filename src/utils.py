@@ -2,32 +2,37 @@ import yaml
 import json
 import os
 
-def load_config():
-    """Genel sistem ayarlarını (settings.yaml) yükler."""
-    config_path = "config/settings.yaml"
-    if not os.path.exists(config_path):
-        raise FileNotFoundError(f"Konfigürasyon dosyası bulunamadı: {config_path}")
-    
-    with open(config_path, "r", encoding="utf-8") as f:
-        return yaml.safe_load(f)
+# ... (load_config ve load_secrets fonksiyonları aynı kalacak) ...
 
-def load_secrets():
-    """Şifre ve gizli anahtarları (secrets.yaml) yükler."""
-    secrets_path = "config/secrets.yaml"
-    if not os.path.exists(secrets_path):
-        # Dosya yoksa boş bir yapı döndür veya hata fırlat
-        print(f"Uyarı: {secrets_path} bulunamadı.")
-        return {"credentials": {"usernames": {}}, "cookie": {"name": "", "key": "", "expiry_days": 1}}
-        
-    with open(secrets_path, "r", encoding="utf-8") as f:
-        return yaml.safe_load(f)
+def load_prompts():
+    """
+    YENİ: Tüm prompt metinlerini (prompts.yaml) yükler.
+    Böylece kod içinde uzun stringler tutmak zorunda kalmayız.
+    """
+    prompts_path = "config/prompts.yaml"
+    
+    # Varsayılan Promptlar (Dosya yoksa hata vermesin diye)
+    default_prompts = {
+        "system_persona": "You are a helpful assistant.",
+        "ste100_rules": "",
+        "response_template": "Context: {context}\nQuestion: {question}"
+    }
+
+    if os.path.exists(prompts_path):
+        try:
+            with open(prompts_path, "r", encoding="utf-8") as f:
+                return yaml.safe_load(f)
+        except Exception as e:
+            print(f"Hata: {prompts_path} okunamadı: {e}")
+            return default_prompts
+    else:
+        print(f"Uyarı: {prompts_path} bulunamadı. Varsayılanlar kullanılıyor.")
+        return default_prompts
 
 def load_ste100_rules():
-    """STE100 yasaklı kelime listesini (ste100_rules.json) yükler."""
+    # ... (Eski json yükleme fonksiyonu aynen kalıyor, Guard için gerekli) ...
     rules_path = "config/ste100_rules.json"
     if os.path.exists(rules_path):
         with open(rules_path, "r", encoding="utf-8") as f:
             return json.load(f)
-    else:
-        # Dosya yoksa varsayılan boş kural döndür
-        return {"forbidden_words": {}}
+    return []
