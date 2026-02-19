@@ -11,9 +11,11 @@ from tqdm import tqdm
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from qwen_vl_utils import process_vision_info
 
+
 # --- KENDİ MODÜLLERİMİZ ---
 from src.database import DatabaseManager
 from src.llm_manager import LLMManager
+from src.utils import load_prompts
 
 # --- 1. AYARLAR VE LOGLAMA ---
 class CFG:
@@ -45,6 +47,59 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # --- 2. YARDIMCI SINIFLAR ---
+class STE100SemanticSplitter:
+    """
+    PDF içindeki font boyutlarına ve kalınlıklarına (Bold) bakarak
+    metni anlamsal (semantic) bütünlük içinde, başlıklarına göre böler.
+    """
+    def __init__(self, normal_text_size_limit=11.0):
+        # Bu değerin üzerindeki fontları "Başlık" kabul edeceğiz.
+        # PDF'ine göre bu değeri 10, 11 veya 12 olarak ayarlayabilirsin.
+        self.normal_text_size_limit = normal_text_size_limit
+
+    def extract_semantic_chunks(self, page):
+        semantic_chunks = []
+        current_heading = "Genel Bağlam"
+        current_content = ""
+
+        # Sayfadaki tüm elementleri detaylı sözlük (dict) olarak al
+        blocks = page.get_text("dict")["blocks"]
+
+        for b in blocks:
+            if b['type'] == 0:  # Eğer bu blok bir 'metin' ise
+                for line in b["lines"]:
+                    for span in line["spans"]:
+                        text = span["text"].strip()
+                        if not text: continue
+                        
+                        font_size = span["size"]
+                        font_name = span["font"].lower()
+
+                        # BAŞLIK TESPİTİ: Font boyutu büyükse VEYA font isminde 'bold' geçiyorsa
+                        is_heading = font_size > self.normal_text_size_limit or "bold" in font_name
+
+                        if is_heading:
+                            # Eski başlığı ve içeriğini kaydet (Eğer içi boş değilse)
+                            if current_content.strip() and len(current_content) > 20:
+                                chunk_text = f"[{current_heading}]\n{current_content.strip()}"
+                                semantic_chunks.append(chunk_text)
+                            
+                            # Yeni başlığa geç
+                            current_heading = text
+                            current_content = ""
+                        else:
+                            # Başlık değilse, mevcut içeriğe ekle
+                            current_content += text + " "
+                
+                # Bloklar (paragraflar) arası boşluk bırak
+                current_content += "\n\n"
+
+        # Sayfa bitiminde son kalan içeriği de ekle
+        if current_content.strip() and len(current_content) > 20:
+            chunk_text = f"[{current_heading}]\n{current_content.strip()}"
+            semantic_chunks.append(chunk_text)
+
+        return semantic_chunks
 
 class CheckpointManager:
     """Hangi dosyaların işlendiğini takip eder."""
@@ -70,58 +125,97 @@ class CheckpointManager:
         return filename in self.processed
 
 class CompositeVisualMiner:
-    """Görselleri akıllıca ayıklar."""
+    """Görselleri ve alt yazıları akıllıca ayıklar ve birleştirir."""
     def __init__(self, min_width=CFG.MIN_WIDTH, min_height=CFG.MIN_HEIGHT, vector_spam_limit=600):
         self.min_width = min_width
         self.min_height = min_height
         self.vector_spam_limit = vector_spam_limit 
 
-    def extract_visual_crops(self, page):
-        """Sayfadaki önemli görsel alanları (resim/tablo) tespit eder."""
-        # Basitlik için sadece resim varlığına bakıyoruz, 
-        # çünkü rag_engine artık sayfanın TAMAMINI asset olarak kullanıyor.
-        images = page.get_images(full=True)
-        if images: return True
-        
-        # Çizim/Tablo kontrolü
-        paths = page.get_drawings()
-        if len(paths) > 0 and len(paths) < self.vector_spam_limit:
-            return True
-            
-        return False
+    def _boxes_intersect_or_close(self, box1, box2, margin=150): 
+        """İki kutunun birbirine yakın olup olmadığını kontrol eder."""
+        x1_min, y1_min, x1_max, y1_max = box1
+        x2_min, y2_min, x2_max, y2_max = box2
+        return not (x1_max + margin < x2_min or x1_min - margin > x2_max or
+                    y1_max + margin < y2_min or y1_min - margin > y2_max)
 
+    def _merge_boxes(self, boxes):
+        """Yakın kutuları tek bir büyük Bounding Box içinde birleştirir."""
+        if not boxes: return []
+        merged = []
+        while boxes:
+            current = boxes.pop(0)
+            has_overlap = True
+            while has_overlap:
+                has_overlap = False
+                rest = []
+                for other in boxes:
+                    if self._boxes_intersect_or_close(current, other):
+                        current = (
+                            min(current[0], other[0]),
+                            min(current[1], other[1]),
+                            max(current[2], other[2]),
+                            max(current[3], other[3])
+                        )
+                        has_overlap = True
+                    else:
+                        rest.append(other)
+                boxes = rest
+            merged.append(current)
+        return merged
+
+    def extract_visual_crops(self, page):
+        """Sayfadaki görselleri ve alt yazıları tespit edip kırpar."""
+        all_visual_rects = []
+
+        # 1. Resimleri Tespit Et
+        images = page.get_images(full=True)
+        for img in images:
+            rect = page.get_image_bbox(img)
+            if (rect.width > 50 and rect.height > 50):
+                all_visual_rects.append(list(rect))
+                
+        # 2. Çizim/Tablo Tespit Et
+        paths = page.get_drawings()
+        is_complex_table = len(paths) > self.vector_spam_limit
+        if not is_complex_table:
+            for path in paths:
+                rect = path["rect"]
+                if rect.width > 5 or rect.height > 5:
+                    all_visual_rects.append(list(rect))
+
+        # 3. Kısa Metinleri (Şekil Alt Yazıları vb.) Tespit Et
+        text_blocks = page.get_text("blocks")
+        for block in text_blocks:
+            if len(block[4]) < 200: # 200 karakterden kısaysa muhtemelen başlıktır
+                all_visual_rects.append([block[0], block[1], block[2], block[3]])
+
+        if not all_visual_rects: return []
+
+        # 4. Yakın Öğeleri Birleştir
+        merged_rects = self._merge_boxes(all_visual_rects)
+        
+        # 5. Kırp ve PIL Image Olarak Dön
+        final_crops = []
+        for rect in merged_rects:
+            w, h = rect[2]-rect[0], rect[3]-rect[1]
+            if w < self.min_width or h < self.min_height: continue
+            
+            try:
+                clip_rect = fitz.Rect(rect[0], rect[1], rect[2], rect[3])
+                mat = fitz.Matrix(CFG.IMAGE_DPI_SCALE, CFG.IMAGE_DPI_SCALE)
+                pix = page.get_pixmap(matrix=mat, clip=clip_rect)
+                img_data = pix.tobytes("png")
+                final_crops.append(Image.open(io.BytesIO(img_data)))
+            except: 
+                pass
+                
+        return final_crops
 # --- 3. GÜVENLİ CAPTION VE ASSET KAYDI ---
 
-def generate_caption_safe(pil_image, model, processor):
-    """Görsel için açıklama üretir."""
-    prompt = """
-    Role: Senior Technical Data Analyst & OCR Specialist.
-    Task: Analyze this image for a search engine index. First, CLASSIFY the image type, then extract data accordingly.
-
-    1. **IMAGE CLASSIFICATION:** Start by stating the type: [Graph], [Table], [Technical Drawing], or [Photograph].
-
-    2. **IF GRAPH / CHART:**
-       - **Axes:** Read the X and Y axis labels and units.
-       - **Data:** Describe the trend (e.g., "Linear increase from 0 to 100"). Extract key data points (peaks, valleys, intersections).
-       - **Legend:** List what each line/color represents.
-
-    3. **IF TABLE:**
-       - **Structure:** Transcribe the content into a strict Markdown table format.
-       - **Headers:** Preserve column headers exactly.
-
-    4. **IF TECHNICAL DRAWING / SCHEMATIC:**
-       - **Components:** List all identifiable parts (e.g., "Resistor R1", "Valve V2").
-       - **Connections:** Describe key connections (e.g., "Power supply connects to Main Board via J1").
-       - **Labels:** OCR all part numbers, pinouts, and annotations.
-
-    5. **IF PHOTOGRAPH:**
-       - **Subject:** Describe the equipment/part shown.
-       - **Condition:** Note any visible damage (burns, cracks, corrosion) or status (LED on/off).
-       - **Text:** Read all labels, serial numbers, and warning stickers verbatim.
-
-    Constraint: Output ONLY factual data. Do not use conversational filler.
-    """
-    messages = [{"role": "user", "content": [{"type": "image", "image": pil_image}, {"type": "text", "text": prompt}]}]
+def generate_caption_safe(pil_image, model, processor, prompt_text):
+    """Görsel için açıklamayı YAML'dan gelen prompt ile üretir."""
+    
+    messages = [{"role": "user", "content": [{"type": "image", "image": pil_image}, {"type": "text", "text": prompt_text}]}]
     
     try:
         text_input = processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
@@ -181,6 +275,10 @@ def main_ingest(pdf_paths, collection_name="doc_default"):
     llm_manager = LLMManager()
     model, processor = llm_manager.load_vision_model()
     embedder = llm_manager.load_embedder()
+
+    prompts = load_prompts()
+    # Eğer YAML'da bulamazsa güvenlik için kısa bir fallback metni koyuyoruz
+    caption_prompt = prompts.get("caption_prompt", "Describe this technical image accurately.")
     
     for pdf_path in pdf_paths:
         filename = os.path.basename(pdf_path)
@@ -204,41 +302,55 @@ def main_ingest(pdf_paths, collection_name="doc_default"):
             try:
                 text = page.get_text() or ""
                 
-                # Görsel Kontrolü
-                has_visual = miner.extract_visual_crops(page)
+                detected_images = miner.extract_visual_crops(page)
                 visual_summary = ""
                 asset_path = ""
+                has_visual = False
                 
-                if has_visual:
-                    # 1. Sayfayı Asset olarak kaydet (RAG Engine için)
+                if detected_images:
+                    has_visual = True
+                    # 1. Sayfanın TAMAMINI Asset olarak kaydet (RAG Engine için)
+                    # Bu kısmı ellemeyin, RAG Engine hala kullanıcıya tam sayfayı gösterecek.
                     asset_path = save_page_asset(page, filename, i+1)
                     
-                    # 2. Sayfanın görsel özetini çıkar (Captioning)
-                    # Not: Burada sadece görsel varsa tüm sayfayı captionlıyoruz.
-                    # Daha detaylı crop mantığı istenirse eklenebilir.
-                    
-                    # Performans için: Sayfanın küçük bir önizlemesini modele veriyoruz
-                    pix_small = page.get_pixmap(matrix=fitz.Matrix(0.5, 0.5))
-                    img_data = pix_small.tobytes("png")
-                    pil_img = Image.open(io.BytesIO(img_data))
-                    
-                    caption = generate_caption_safe(pil_img, model, processor)
-                    visual_summary = f"\n[VISUAL SUMMARY]: {caption}\n"
+                    # 2. Sadece KIRPILMIŞ görsellerin özetini çıkar (Captioning)
+                    visual_summary += "\n[VISUAL/TABLE DETECTED]:\n"
+                    # Sayfada birden fazla kırpılmış görsel/tablo olabilir, hepsini tek tek dönüyoruz
+                    for idx, img in enumerate(detected_images):
+                        try:
+                            # Modele artık tüm sayfa değil, sadece 'img' (kırpılmış bölge) gidiyor
+                            caption = generate_caption_safe(img, model, processor, caption_prompt)
+                            visual_summary += f"- Analysis {idx+1}: {caption}\n"
+                        except Exception as img_err:
+                            logger.error(f"Görsel analiz hatası: {img_err}")
 
                 full_content = f"--- SOURCE: {filename} | PAGE {i+1} ---\n"
                 full_content += visual_summary
                 full_content += f"[TEXT CONTENT]:\n{text}"
 
-                splitter = RecursiveCharacterTextSplitter(chunk_size=CFG.CHUNK_SIZE, chunk_overlap=CFG.CHUNK_OVERLAP)
-                chunks = splitter.split_text(full_content)
+                # Sayfa işleme döngüsünün üst kısımlarında sınıfı başlatalım
+                semantic_splitter = STE100SemanticSplitter(normal_text_size_limit=11.0) 
+                
+                # ... (Görsel işlemleri aynı kalacak) ...
+                
+                # Sadece düz 'text' almak yerine, anlamsal chunk'ları alıyoruz
+                page_chunks = semantic_splitter.extract_semantic_chunks(page)
 
-                for chunk in chunks:
-                    batch_chunks.append(chunk)
+                for chunk_text in page_chunks:
+                    # Görsel özetleri varsa (visual_summary), ilk veya ilgili chunk'a yedirebiliriz
+                    # Şimdilik her chunk'ın başına genel sayfa bağlamını ekliyoruz
+                    final_chunk = f"--- SOURCE: {filename} | PAGE {i+1} ---\n"
+                    if has_visual:
+                         final_chunk += visual_summary
+                    final_chunk += f"{chunk_text}"
+                    
+                    batch_chunks.append(final_chunk)
+                    
                     batch_metadatas.append({
                         "source": filename, 
                         "page": i+1, 
                         "has_visual": str(has_visual),
-                        "image_path": asset_path # <-- RAG Engine bunu okuyacak
+                        "image_path": asset_path 
                     })
 
                 if len(batch_chunks) >= CFG.BATCH_SIZE:
@@ -257,7 +369,7 @@ def main_ingest(pdf_paths, collection_name="doc_default"):
         gc.collect()
         torch.cuda.empty_cache()
 
-    logger.info("🎉 Tüm işlemler tamamlandı.")
+    logger.info(" Tüm işlemler tamamlandı.")
 
 if __name__ == "__main__":
     data_folder = "data" 

@@ -37,7 +37,7 @@ class RAGEngine:
         return formatted
 
     def _generate_multi_queries(self, original_query, model, processor, n=3):
-        prompt = f"Question: '{original_query}'. To search for this question in a technical database, write {n} different alternative questions in Turkish. Just list the questions, no numbering."
+        prompt = f"Question: '{original_query}'. To search for this question in a technical database, write {n} different alternative questions in English. Just list the questions, no numbering."
         messages = [{"role": "user", "content": [{"type": "text", "text": prompt}]}]
         try:
             text_input = processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
@@ -140,7 +140,7 @@ class RAGEngine:
             # Görsel Yükleme
             image_path = best_meta.get("image_path", "")
             if image_path and os.path.exists(image_path):
-                print(f"🖼️ Görsel Bağlam Yükleniyor: {image_path}")
+                print(f" Görsel Bağlam Yükleniyor: {image_path}")
                 try:
                     input_image = Image.open(image_path)
                 except Exception as e:

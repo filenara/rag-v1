@@ -13,7 +13,6 @@ chroma_db_data/
 *.sqlite3
 
 # Test Dosyaları (PDF'ler gitmesin)
-*.pdf
 *.png
 *.jpg
 
