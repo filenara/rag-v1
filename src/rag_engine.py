@@ -91,7 +91,7 @@ class RAGEngine:
             print(f"⚠️ Sorgu çoğaltma hatası: {e}")
             return [original_query]
 
-    def search_and_answer(self, query, collection_name, history=[], user_image=None):
+    def search_and_answer(self, query, collection_name, history=[], user_image=None, use_ste100=False):
         # 1. MODELLERİ ÇAĞIR
         embedder = self.llm_manager.load_embedder()
         reranker = self.llm_manager.load_reranker()
