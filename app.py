@@ -20,23 +20,20 @@ st.set_page_config(
 # --- 2. BAŞLATMA VE ÖNBELLEK ---
 @st.cache_resource
 def get_engine():
-    """RAGEngine ağır bir sınıftır, sadece bir kere yüklenir."""
     return RAGEngine()
 
 @st.cache_resource
 def get_guard():
-    """STE100Guard hafif ama sürekli regex derlemesin diye cache'liyoruz."""
+    # Artık JSON sözlüğünü okuyan yeni Guard sınıfımız çalışıyor
     return STE100Guard()
 
-# Global nesneleri çağır
 engine = get_engine()
 guard = get_guard()
 config = load_config()
 
-# Koleksiyon adı (Admin ingest sırasında belirlenen ad)
 COLLECTION_NAME = "doc_kaggle_v1"
 
-# --- 3. KİMLİK DOĞRULAMA (Mevcut yapıyı koruyoruz) ---
+# --- 3. KİMLİK DOĞRULAMA ---
 def load_auth():
     with open('config/secrets.yaml') as file:
         config_auth = yaml.load(file, Loader=SafeLoader)
@@ -45,14 +42,12 @@ def load_auth():
         config_auth['credentials'],
         config_auth['cookie']['name'],
         config_auth['cookie']['key'],
-        config_auth['cookie']['expiry_days'],
-        # preauthorized=config_auth['preauthorized'] # Versiyon farkına göre gerekebilir/gerekmeyebilir
+        config_auth['cookie']['expiry_days']
     )
     return authenticator
 
 authenticator = load_auth()
 
-# Giriş Widget'ı (Streamlit sürümüne göre değişiklik gösterebilir, en güvenli yöntem)
 try:
     name, authentication_status, username = authenticator.login("main")
 except:
@@ -68,10 +63,16 @@ if authentication_status:
         st.write(f"Hoşgeldin, **{name}**")
         st.divider()
         
-        # Ayarlar
-        st.subheader(" Sistem Durumu")
-        st.success(" RAG Motoru: Aktif")
-        st.success(" STE100 Denetimi: Aktif")
+        # Ayarlar ve Yeni Toggle Butonu
+        st.subheader("⚙️ Sistem Ayarları")
+        
+        # Self-Correction (Kendi Kendini Düzeltme) Butonu
+        strict_mode = st.toggle(
+            "Sıkı Denetim (Otomatik Düzeltme)", 
+            value=False, 
+            help="Açıksa, LLM tespit edilen STE100 ihlallerini kendi kendine yeniden yazarak düzeltir. (Cevap süresini uzatabilir)"
+        )
+        
         st.info(f"Veri Seti: {COLLECTION_NAME}")
         
         if st.button("Sohbeti Temizle", type="primary"):
@@ -92,28 +93,40 @@ if authentication_status:
     # Geçmiş Mesajları Göster
     for msg in st.session_state.messages:
         with st.chat_message(msg["role"]):
-            # Eğer mesajda görsel varsa göster
             if "image" in msg:
                 st.image(msg["image"], caption="Uploaded Image", width=300)
             
             st.markdown(msg["content"])
             
-            # Eğer bu bir asistan cevabıysa ve içinde rapor varsa (context/warnings) expander ile göster
+            # Geçmiş Raporları Göster
             if msg.get("is_report", False):
-                status_color = "red" if msg.get("warnings") else "green"
-                status_icon = "Uyarı" if msg.get("warnings") else "Sorunsuz"
-                status_title = "STE100 Uyarıları Mevcut" if msg.get("warnings") else "STE100 Uyumlu"
+                is_compliant = msg.get("is_compliant", True)
+                was_corrected = msg.get("was_corrected", False)
+                feedback = msg.get("feedback_report", [])
                 
-                with st.expander(f"{status_icon} Teknik Rapor & Kaynaklar ({status_title})"):
-                    # 1. STE100 Uyarıları
-                    if msg.get("warnings"):
-                        st.error("Tespit Edilen İhlaller:")
-                        for w in msg["warnings"]:
-                            st.write(f"- {w}")
+                # Rapor başlığını duruma göre belirle
+                if is_compliant:
+                    status_title = "Teknik Rapor (Kusursuz)"
+                    status_icon = "✅"
+                elif was_corrected:
+                    status_title = "STE100 Düzeltme Raporu (Onarıldı)"
+                    status_icon = "🔧"
+                else:
+                    status_title = "STE100 Denetim Raporu (İhlal Var)"
+                    status_icon = "⚠️"
+                
+                with st.expander(f"{status_icon} {status_title}"):
+                    if not is_compliant:
+                        if was_corrected:
+                            st.info("Arka planda uygulanan düzeltmeler:")
+                        else:
+                            st.error("Düzeltilmeyen İhlaller (Sıkı Denetim Kapalı):")
+                        
+                        for f in feedback:
+                            st.markdown(f)
                     else:
-                        st.success("Bu cevap STE100 kelime standartlarına uygundur.")
+                        st.success("Kelime kullanımı ASD-STE100 sözlüğüne %100 uygundur.")
                     
-                    # 2. Kullanılan Context
                     st.divider()
                     st.markdown("**Referans Alınan Teknik Döküman:**")
                     st.info(msg.get("context_text", "Context bulunamadı."))
@@ -127,39 +140,61 @@ if authentication_status:
 
         # 2. Asistan Cevabını Üret
         with st.chat_message("assistant"):
-            # UI Animasyonu
             status_container = st.status("Analiz ediliyor...", expanded=True)
             
             try:
-                # A) Arama ve Üretim (YAML Promptlar devrede)
-                status_container.write("Teknik dökümanlar taranıyor (Hybrid Search)...")
-                response_text, context_text = engine.search_and_answer(
+                # A) İlk Taslak (Draft) Üretimi
+                status_container.write("Teknik dökümanlar taranıyor...")
+                draft_text, context_text = engine.search_and_answer(
                     query=prompt, 
                     collection_name=COLLECTION_NAME,
                     history=st.session_state.messages
                 )
                 
-                # B) STE100 Denetimi (Guard devrede)
-                status_container.write("STE100 uyumluluk kontrolü yapılıyor...")
-                warnings = guard.check_compliance(response_text)
+                # B) JSON Sözlüğü ile Teşhis (Guard)
+                status_container.write("STE100 kuralları denetleniyor...")
+                is_compliant, feedback_report = guard.analyze_and_report(draft_text)
                 
-                status_container.update(label="Tamamlandı", state="complete", expanded=False)
+                final_text = draft_text
+                was_corrected = False
 
-                # C) Cevabı Yazdır
-                st.markdown(response_text)
+                # C) Self-Correction (Kendi Kendini Düzeltme) Döngüsü
+                if not is_compliant and strict_mode:
+                    status_container.write("İhlaller tespit edildi. Metin sözlüğe göre yeniden yazılıyor...")
+                    
+                    # Refine işlemi için modelleri LLM Manager'dan çekiyoruz
+                    model, processor = engine.llm_manager.load_vision_model()
+                    
+                    # Motor düzeltmeyi yapıyor
+                    final_text = engine.refine_answer(draft_text, feedback_report, model, processor)
+                    was_corrected = True
+                    status_container.write("Düzeltme tamamlandı.")
+
+                status_container.update(label="İşlem Tamamlandı", state="complete", expanded=False)
+
+                # D) Nihai Cevabı Yazdır
+                st.markdown(final_text)
                 
-                # D) Rapor Alanı (Expander)
-                # İkon ve renk belirleme
-                has_warning = len(warnings) > 0
-                expander_title = "STE100 Denetim Raporu (İhlal Var)" if has_warning else "Teknik Rapor (Uyumlu)"
+                # E) Rapor Alanı (Expander)
+                if is_compliant:
+                    expander_title = "✅ Teknik Rapor (Kusursuz)"
+                elif was_corrected:
+                    expander_title = "🔧 STE100 Düzeltme Raporu (Onarıldı)"
+                else:
+                    expander_title = "⚠️ STE100 Denetim Raporu (İhlal Var)"
                 
-                with st.expander(expander_title, expanded=has_warning):
-                    if has_warning:
-                        st.error(f"Bu cevapta {len(warnings)} adet STE100 ihlali tespit edildi:")
-                        for w in warnings:
-                            st.markdown(f" {w}")
+                # Sıkı denetim kapalıysa ve ihlal varsa expander açık gelsin ki kullanıcı görsün
+                with st.expander(expander_title, expanded=(not is_compliant and not strict_mode)):
+                    if is_compliant:
+                        st.success("Kelime kullanımı ASD-STE100 sözlüğüne %100 uygundur.")
                     else:
-                        st.success("Kelime kullanımı ASD-STE100 sözlüğüne uygundur.")
+                        if was_corrected:
+                            st.info("Aşağıdaki STE100 kuralları taslak metne başarıyla uygulandı:")
+                        else:
+                            st.error(f"Bu cevapta {len(feedback_report)} adet STE100 ihlali tespit edildi. Sıkı Denetim kapalı olduğu için düzeltilmedi:")
+                            
+                        for f in feedback_report:
+                            st.markdown(f)
                         
                     st.markdown("---")
                     st.caption("**Kullanılan Bağlam (Context):**")
@@ -168,17 +203,14 @@ if authentication_status:
                 # 3. Geçmişe Kaydet
                 st.session_state.messages.append({
                     "role": "assistant",
-                    "content": response_text,
+                    "content": final_text,
                     "is_report": True,
-                    "warnings": warnings,
+                    "is_compliant": is_compliant,
+                    "was_corrected": was_corrected,
+                    "feedback_report": feedback_report,
                     "context_text": context_text
                 })
 
             except Exception as e:
                 status_container.update(label="Hata", state="error")
                 st.error(f"Bir hata oluştu: {str(e)}")
-
-elif authentication_status is False:
-    st.error('Kullanıcı adı veya şifre hatalı.')
-elif authentication_status is None:
-    st.warning('Lütfen giriş yapınız.')

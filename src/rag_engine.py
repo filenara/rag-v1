@@ -9,6 +9,38 @@ from src.llm_manager import LLMManager
 from src.utils import load_prompts
 
 class RAGEngine:
+    def refine_answer(self, draft_text, feedback_list, model, processor):
+        """
+        Guard'dan gelen hata raporunu ve YAML'daki promptu kullanarak 
+        Qwen-VL'e metni yeniden ve hatasız yazdırır.
+        """
+        print("🔄 [Self-Correction] STE100 ihlalleri düzeltiliyor...")
+        
+        # Liste halindeki hataları alt alta tek bir metin yap
+        feedback_str = "\n".join(feedback_list)
+        
+        # Şablonu YAML'dan çek
+        template = self.prompts.get('self_correction_prompt', "Fix this:\n{draft_answer}\nErrors:\n{feedback_report}")
+        
+        # Değişkenleri prompt içine göm
+        prompt_text = template.format(
+            draft_answer=draft_text,
+            feedback_report=feedback_str
+        )
+        
+        # Model çıkarımı (Inference)
+        messages = [{"role": "user", "content": [{"type": "text", "text": prompt_text}]}]
+        text_input = processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+        inputs = processor(text=[text_input], padding=True, return_tensors="pt").to(model.device)
+        
+        with torch.no_grad():
+            generated_ids = model.generate(**inputs, max_new_tokens=512)
+            
+        response = processor.batch_decode(generated_ids, skip_special_tokens=True)[0]
+        final_answer = response.split("assistant\n")[-1] if "assistant\n" in response else response
+        
+        return final_answer
+    
     def __init__(self):
         print("⚡ RAGEngine Başlatılıyor (Conversation Aware + Multi-Query RRF Mode)...")
         self.db = DatabaseManager()

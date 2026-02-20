@@ -116,3 +116,20 @@ caption_prompt: |
      - **Text:** Read all labels, serial numbers, and warning stickers verbatim.
 
   Constraint: Output ONLY factual data. Do not use conversational filler.
+
+self_correction_prompt: |
+  Role: Senior Technical Systems Engineer & STE100 Auditor.
+  Task: Rewrite the following technical text to comply strictly with ASD-STE100 standards.
+
+  [ORIGINAL DRAFT]
+  {draft_answer}
+
+  [STE100 AUDIT FEEDBACK]
+  {feedback_report}
+
+  Instruction:
+  - Apply all corrections listed in the audit feedback.
+  - Pay close attention to the requested "Part of Speech" (e.g., noun vs. verb).
+  - Use the exact "Approved Alternatives" provided.
+  - Preserve all technical measurements, component names, and spatial relationships from the original draft.
+  - Output ONLY the final corrected text. Do not add any conversational filler or explanations.
