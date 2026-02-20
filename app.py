@@ -72,13 +72,14 @@ if authentication_status:
         # Ayarlar ve Yeni Toggle Butonu
         st.subheader("⚙️ Sistem Ayarları")
         
-        # Self-Correction (Kendi Kendini Düzeltme) Butonu
-        strict_mode = st.toggle(
-            "Sıkı Denetim (Otomatik Düzeltme)", 
-            value=False, 
-            help="Açıksa, LLM tespit edilen STE100 ihlallerini kendi kendine yeniden yazarak düzeltir. (Cevap süresini uzatabilir)"
-        )
+        # ANA ŞALTER: STE100 Modu
+        ste100_mode = st.toggle("STE100 Formatında Yanıtla", value=False, help="Kapatıldığında normal ve akıcı dille bilgi verir. Açıldığında STE100 kurallarını zorunlu kılar.")
         
+        # Sıkı Denetim sadece STE100 modu açıksa görünür/çalışır olsun
+        strict_mode = False
+        if ste100_mode:
+            strict_mode = st.toggle("Sıkı Denetim (Otomatik Düzeltme)", value=False)
+            
         st.info(f"Veri Seti: {COLLECTION_NAME}")
 
         st.divider()
@@ -168,79 +169,85 @@ if authentication_status:
                 # A) İlk Taslak (Draft) Üretimi
                 status_container.write("Teknik dökümanlar taranıyor...")
                 
-                # --- DEĞİŞTİRİLEN KISIM: user_image parametresi motora gönderiliyor ---
+                # Motora use_ste100 parametresini gönderiyoruz
                 draft_text, context_text = engine.search_and_answer(
                     query=prompt, 
                     collection_name=COLLECTION_NAME,
                     history=st.session_state.messages,
-                    user_image=user_image 
+                    user_image=user_image,
+                    use_ste100=ste100_mode
                 )
-                
-                # B) JSON Sözlüğü ile Teşhis (Guard)
-                status_container.write("STE100 kuralları denetleniyor...")
-                is_compliant, feedback_report = guard.analyze_and_report(draft_text)
                 
                 final_text = draft_text
                 was_corrected = False
+                feedback_report = []
+                is_compliant = True
 
-                # C) Self-Correction (Kendi Kendini Düzeltme) Döngüsü
-                # C) Self-Correction (Kendi Kendini Düzeltme) Döngüsü
-                if not is_compliant and strict_mode:
-                    max_retries = 2
-                    retries = 0
-                    current_text = draft_text
+                # B ve C Adımları (Guard ve Self-Correction) SADECE STE100 Modu açıksa çalışır
+                if ste100_mode:
+                    status_container.write("STE100 kuralları denetleniyor...")
+                    is_compliant, feedback_report = guard.analyze_and_report(draft_text)
                     
-                    # Modeli döngüden önce bir kez yüklüyoruz ki her denemede zaman kaybetmeyelim
-                    model, processor = engine.llm_manager.load_vision_model()
-                    
-                    while not is_compliant and retries < max_retries:
-                        retries += 1
-                        status_container.write(f"İhlaller analiz ediliyor ve düzeltiliyor... (Deneme {retries}/{max_retries})")
+                    if not is_compliant and strict_mode:
+                        # (Burada daha önce yazdığımız 2 deneme limitli while döngüsü kodlarınız duracak)
+                        max_retries = 2
+                        retries = 0
+                        current_text = draft_text
+                        model, processor = engine.llm_manager.load_vision_model()
                         
-                        previous_text = current_text
-                        
-                        # Motor düzeltmeyi yapıyor
-                        current_text = engine.refine_answer(current_text, feedback_report, model, processor)
-                        
-                        # Eğer LLM kuralları okuyup "Değişikliğe gerek yok, doğru kullanılmış" derse döngüyü kır
-                        if current_text.strip() == previous_text.strip():
-                            status_container.write("LLM sözcük türü kullanımını (Part of Speech) onayladı.")
-                            is_compliant = True # Yalancı pozitifi (False Positive) yoksay
-                            break
+                        while not is_compliant and retries < max_retries:
+                            retries += 1
+                            status_container.write(f"İhlaller düzeltiliyor... (Deneme {retries}/{max_retries})")
+                            previous_text = current_text
+                            current_text = engine.refine_answer(current_text, feedback_report, model, processor)
                             
-                        # Yeni metni tekrar denetle
-                        is_compliant, feedback_report = guard.analyze_and_report(current_text)
-                        
-                    final_text = current_text
-                    was_corrected = True
-                    
-                    if is_compliant:
-                        status_container.write("Düzeltme başarıyla tamamlandı.")
-                    else:
-                        status_container.write(f"Sistem {max_retries} kez denedi ancak tüm kelimeler sözlüğe uydurulamadı.")
+                            if current_text.strip() == previous_text.strip():
+                                is_compliant = True
+                                break
+                            is_compliant, feedback_report = guard.analyze_and_report(current_text)
+                            
+                        final_text = current_text
+                        was_corrected = True
+
+                status_container.update(label="İşlem Tamamlandı", state="complete", expanded=False)
+                st.markdown(final_text)
                 
-                # Sıkı denetim kapalıysa ve ihlal varsa expander açık gelsin ki kullanıcı görsün
-                with st.expander(expander_title, expanded=(not is_compliant and not strict_mode)):
+                # E) Rapor Alanı (Expander)
+                if ste100_mode:
                     if is_compliant:
-                        st.success("Kelime kullanımı ASD-STE100 sözlüğüne %100 uygundur.")
+                        expander_title = "✅ Teknik Rapor (Kusursuz)"
+                    elif was_corrected:
+                        expander_title = "🔧 STE100 Düzeltme Raporu (Onarıldı)"
                     else:
-                        if was_corrected:
-                            st.info("Aşağıdaki STE100 kuralları taslak metne başarıyla uygulandı:")
-                        else:
-                            st.error(f"Bu cevapta {len(feedback_report)} adet STE100 ihlali tespit edildi. Sıkı Denetim kapalı olduğu için düzeltilmedi:")
-                            
-                        for f in feedback_report:
-                            st.markdown(f)
+                        expander_title = "⚠️ STE100 Denetim Raporu (İhlal Var)"
                         
-                    st.markdown("---")
-                    st.caption("**Kullanılan Bağlam (Context):**")
-                    st.text(context_text[:1000] + "..." if len(context_text) > 1000 else context_text)
+                    with st.expander(expander_title, expanded=(not is_compliant and not strict_mode)):
+                        # ... (Mevcut expander içeriğiniz aynı kalacak) ...
+                        if is_compliant:
+                            st.success("Kelime kullanımı ASD-STE100 sözlüğüne %100 uygundur.")
+                        else:
+                            if was_corrected:
+                                st.info("Aşağıdaki STE100 kuralları taslak metne başarıyla uygulandı:")
+                            else:
+                                st.error(f"Bu cevapta {len(feedback_report)} adet STE100 ihlali tespit edildi:")
+                            for f in feedback_report:
+                                st.markdown(f)
+                        st.markdown("---")
+                        st.caption("**Kullanılan Bağlam (Context):**")
+                        st.text(context_text[:1000] + "..." if len(context_text) > 1000 else context_text)
+                else:
+                    # STE100 Modu KAPALIYSA sadece kaynak bağlamını göster
+                    with st.expander("ℹ️ Kaynak ve Bağlam Bilgisi"):
+                        st.info("STE100 denetimi kapalı. Doğal dilde analiz üretildi.")
+                        st.markdown("---")
+                        st.caption("**Kullanılan Bağlam (Context):**")
+                        st.text(context_text[:1000] + "..." if len(context_text) > 1000 else context_text)
 
                 # 3. Geçmişe Kaydet
                 st.session_state.messages.append({
                     "role": "assistant",
                     "content": final_text,
-                    "is_report": True,
+                    "is_report": ste100_mode, # Rapor durumu moda göre kaydedilir
                     "is_compliant": is_compliant,
                     "was_corrected": was_corrected,
                     "feedback_report": feedback_report,

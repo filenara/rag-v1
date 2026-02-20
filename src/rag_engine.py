@@ -49,11 +49,17 @@ class RAGEngine:
         # YAML'dan promptları yükle
         self.prompts = load_prompts()
 
-    def _construct_system_prompt(self):
-        """YAML'dan gelen Persona ve STE100 Kurallarını birleştirir."""
-        persona = self.prompts.get('system_persona', 'You are a helpful assistant.')
-        rules = self.prompts.get('ste100_rules', '')
-        return f"{persona}\n\n---\n{rules}"
+    def _construct_system_prompt(self, use_ste100=False):
+        """Arayüzden gelen komuta göre prompt seçimi yapar."""
+        if use_ste100:
+            # STE100 Modu Açık: Katı kuralları yükle
+            persona = self.prompts.get('system_persona', 'You are a helpful assistant.')
+            rules = self.prompts.get('ste100_rules', '')
+            return f"{persona}\n\n---\n{rules}"
+        else:
+            # STE100 Modu Kapalı: Normal teknik asistan rolünü yükle
+            persona = self.prompts.get('system_persona_standard', 'You are a technical assistant.')
+            return persona
 
     def _is_feedback_intent(self, query):
         feedback_words = ["yanlış", "hatalı", "tekrar bak", "düzelt", "wrong", "incorrect", "re-examine", "look again"]
@@ -228,7 +234,7 @@ class RAGEngine:
         user_content.append({"type": "text", "text": user_prompt_text})
 
         # 4. Sistem Promptunu Hazırla (STE100 Rules)
-        system_instruction = self._construct_system_prompt()
+        system_instruction = self._construct_system_prompt(use_ste100)
 
         messages = [
             {"role": "system", "content": system_instruction},
