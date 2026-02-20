@@ -3,7 +3,7 @@ import streamlit_authenticator as stauth
 import yaml
 import time
 from yaml.loader import SafeLoader
-
+from PIL import Image
 # --- KENDİ MODÜLLERİMİZ ---
 from src.rag_engine import RAGEngine
 from src.ste100_guard import STE100Guard
@@ -49,9 +49,15 @@ def load_auth():
 authenticator = load_auth()
 
 try:
+    # Güncel versiyonlar için
     name, authentication_status, username = authenticator.login("main")
-except:
+except TypeError:
+    # Eski versiyon uyumluluğu (Eğer "main" argümanı kabul edilmiyorsa)
     name, authentication_status, username = authenticator.login()
+except Exception as e:
+    # Beklenmeyen kritik hataları gizleme, ekrana bas
+    st.error(f"Kimlik doğrulama modülü başlatılamadı: {e}")
+    name, authentication_status, username = None, None, None
 
 # --- 4. ANA UYGULAMA MANTIĞI ---
 
@@ -74,6 +80,10 @@ if authentication_status:
         )
         
         st.info(f"Veri Seti: {COLLECTION_NAME}")
+
+        st.divider()
+        st.subheader("Görsel Analiz")
+        uploaded_file = st.file_uploader("Sorguya görsel ekleyin (İsteğe bağlı)", type=["png", "jpg", "jpeg"])
         
         if st.button("Sohbeti Temizle", type="primary"):
             st.session_state.messages = []
@@ -133,9 +143,21 @@ if authentication_status:
 
     # --- KULLANICI GİRİŞİ ---
     if prompt := st.chat_input("Teknik sorunuzu buraya yazın..."):
+        
+        # Resmi hazırla
+        user_image = None
+        msg_data = {"role": "user", "content": prompt}
+        
+        if uploaded_file is not None:
+            user_image = Image.open(uploaded_file)
+            msg_data["image"] = user_image
+            
         # 1. Kullanıcı Mesajını Ekrana Bas
-        st.session_state.messages.append({"role": "user", "content": prompt})
+        st.session_state.messages.append(msg_data)
+        
         with st.chat_message("user"):
+            if user_image:
+                st.image(user_image, caption="Kullanıcı Görseli", width=300)
             st.markdown(prompt)
 
         # 2. Asistan Cevabını Üret
@@ -145,10 +167,13 @@ if authentication_status:
             try:
                 # A) İlk Taslak (Draft) Üretimi
                 status_container.write("Teknik dökümanlar taranıyor...")
+                
+                # --- DEĞİŞTİRİLEN KISIM: user_image parametresi motora gönderiliyor ---
                 draft_text, context_text = engine.search_and_answer(
                     query=prompt, 
                     collection_name=COLLECTION_NAME,
-                    history=st.session_state.messages
+                    history=st.session_state.messages,
+                    user_image=user_image 
                 )
                 
                 # B) JSON Sözlüğü ile Teşhis (Guard)
@@ -159,29 +184,40 @@ if authentication_status:
                 was_corrected = False
 
                 # C) Self-Correction (Kendi Kendini Düzeltme) Döngüsü
+                # C) Self-Correction (Kendi Kendini Düzeltme) Döngüsü
                 if not is_compliant and strict_mode:
-                    status_container.write("İhlaller tespit edildi. Metin sözlüğe göre yeniden yazılıyor...")
+                    max_retries = 2
+                    retries = 0
+                    current_text = draft_text
                     
-                    # Refine işlemi için modelleri LLM Manager'dan çekiyoruz
+                    # Modeli döngüden önce bir kez yüklüyoruz ki her denemede zaman kaybetmeyelim
                     model, processor = engine.llm_manager.load_vision_model()
                     
-                    # Motor düzeltmeyi yapıyor
-                    final_text = engine.refine_answer(draft_text, feedback_report, model, processor)
+                    while not is_compliant and retries < max_retries:
+                        retries += 1
+                        status_container.write(f"İhlaller analiz ediliyor ve düzeltiliyor... (Deneme {retries}/{max_retries})")
+                        
+                        previous_text = current_text
+                        
+                        # Motor düzeltmeyi yapıyor
+                        current_text = engine.refine_answer(current_text, feedback_report, model, processor)
+                        
+                        # Eğer LLM kuralları okuyup "Değişikliğe gerek yok, doğru kullanılmış" derse döngüyü kır
+                        if current_text.strip() == previous_text.strip():
+                            status_container.write("LLM sözcük türü kullanımını (Part of Speech) onayladı.")
+                            is_compliant = True # Yalancı pozitifi (False Positive) yoksay
+                            break
+                            
+                        # Yeni metni tekrar denetle
+                        is_compliant, feedback_report = guard.analyze_and_report(current_text)
+                        
+                    final_text = current_text
                     was_corrected = True
-                    status_container.write("Düzeltme tamamlandı.")
-
-                status_container.update(label="İşlem Tamamlandı", state="complete", expanded=False)
-
-                # D) Nihai Cevabı Yazdır
-                st.markdown(final_text)
-                
-                # E) Rapor Alanı (Expander)
-                if is_compliant:
-                    expander_title = "✅ Teknik Rapor (Kusursuz)"
-                elif was_corrected:
-                    expander_title = "🔧 STE100 Düzeltme Raporu (Onarıldı)"
-                else:
-                    expander_title = "⚠️ STE100 Denetim Raporu (İhlal Var)"
+                    
+                    if is_compliant:
+                        status_container.write("Düzeltme başarıyla tamamlandı.")
+                    else:
+                        status_container.write(f"Sistem {max_retries} kez denedi ancak tüm kelimeler sözlüğe uydurulamadı.")
                 
                 # Sıkı denetim kapalıysa ve ihlal varsa expander açık gelsin ki kullanıcı görsün
                 with st.expander(expander_title, expanded=(not is_compliant and not strict_mode)):

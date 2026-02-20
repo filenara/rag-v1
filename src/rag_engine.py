@@ -1,6 +1,7 @@
 import torch
 import numpy as np
 import os
+import pickle
 from PIL import Image
 from rank_bm25 import BM25Okapi
 from qwen_vl_utils import process_vision_info
@@ -84,7 +85,7 @@ class RAGEngine:
             print(f"⚠️ Sorgu çoğaltma hatası: {e}")
             return [original_query]
 
-    def search_and_answer(self, query, collection_name, history=[]):
+    def search_and_answer(self, query, collection_name, history=[], user_image=None):
         # 1. MODELLERİ ÇAĞIR
         embedder = self.llm_manager.load_embedder()
         reranker = self.llm_manager.load_reranker()
@@ -124,21 +125,38 @@ class RAGEngine:
             # ... (Buradaki RRF ve Search mantığınız aynı kalıyor) ...
             # Kısalık olması için RRF kod bloğunu özet geçiyorum, sizin önceki kodunuz buraya gelecek
             # --- RRF SİSTEMİ BAŞLANGICI ---
-            all_docs_data = col.get() 
-            documents = all_docs_data['documents']
-            ids = all_docs_data['ids']
-            metadatas = all_docs_data['metadatas']
+            bm25_cache_path = os.path.join("data", "bm25_cache.pkl")
             
-            if not documents: return "Veritabanı boş.", ""
-            tokenized_corpus = [doc.lower().split(" ") for doc in documents]
-            bm25 = BM25Okapi(tokenized_corpus)
+            # 1. Cache var mı kontrol et
+            if os.path.exists(bm25_cache_path):
+                print("⚡ BM25 İndeksi diskten (cache) yükleniyor...")
+                with open(bm25_cache_path, "rb") as f:
+                    cache = pickle.load(f)
+                bm25 = cache["bm25"]
+                ids = cache["ids"]
+                documents = cache["documents"]
+                metadatas = cache["metadatas"]
+            else:
+                # 2. Cache yoksa veritabanından anlık çek (Fallback)
+                print("⚠️ BM25 Cache bulunamadı, anlık indeks oluşturuluyor...")
+                all_docs_data = col.get() 
+                documents = all_docs_data['documents']
+                ids = all_docs_data['ids']
+                metadatas = all_docs_data['metadatas']
+                
+                if not documents: return "Veritabanı boş.", ""
+                tokenized_corpus = [doc.lower().split(" ") for doc in documents]
+                bm25 = BM25Okapi(tokenized_corpus)
+
             doc_scores = {}
             doc_meta_map = {} 
             doc_text_map = {}
             k_constant = 60
+            
             for q in search_queries:
                 q_vec = embedder.encode([q]).tolist()
                 vec_res = col.query(query_embeddings=q_vec, n_results=10)
+                
                 if vec_res['ids']:
                     for rank, doc_id in enumerate(vec_res['ids'][0]):
                         if doc_id not in doc_scores: 
@@ -147,10 +165,12 @@ class RAGEngine:
                                 idx = ids.index(doc_id)
                                 doc_meta_map[doc_id] = metadatas[idx]
                                 doc_text_map[doc_id] = documents[idx]
-                            except: continue
+                            except ValueError: continue
                         doc_scores[doc_id] += 1 / (k_constant + rank)
+                        
                 bm25_scores = bm25.get_scores(q.lower().split(" "))
                 top_bm25_indices = np.argsort(bm25_scores)[::-1][:10]
+                
                 for rank, idx in enumerate(top_bm25_indices):
                     doc_id = ids[idx]
                     if doc_id not in doc_scores: 
@@ -158,8 +178,10 @@ class RAGEngine:
                         doc_meta_map[doc_id] = metadatas[idx]
                         doc_text_map[doc_id] = documents[idx]
                     doc_scores[doc_id] += 1 / (k_constant + rank)
+                    
             sorted_candidates = sorted(doc_scores.items(), key=lambda item: item[1], reverse=True)[:5]
             if not sorted_candidates: return "İlgili sonuç bulunamadı.", ""
+            
             candidates_text = [doc_text_map[item[0]] for item in sorted_candidates]
             candidates_meta = [doc_meta_map[item[0]] for item in sorted_candidates]
             pairs = [[query, txt] for txt in candidates_text]
@@ -170,13 +192,17 @@ class RAGEngine:
             # --- RRF SONU ---
 
             # Görsel Yükleme
-            image_path = best_meta.get("image_path", "")
-            if image_path and os.path.exists(image_path):
-                print(f" Görsel Bağlam Yükleniyor: {image_path}")
-                try:
-                    input_image = Image.open(image_path)
-                except Exception as e:
-                    print(f"Resim yükleme hatası: {e}")
+            if user_image is not None:
+                print("Kullanıcı Görseli Yükleniyor (Veritabanı görseli ezildi)...")
+                input_image = user_image
+            else:
+                image_path = best_meta.get("image_path", "")
+                if image_path and os.path.exists(image_path):
+                    print(f" Görsel Bağlam Yükleniyor: {image_path}")
+                    try:
+                        input_image = Image.open(image_path)
+                    except Exception as e:
+                        print(f"Resim yükleme hatası: {e}")
 
         # --- CEVAP ÜRETİMİ (Şablon Doldurma) ---
         

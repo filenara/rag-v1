@@ -6,6 +6,8 @@ import logging
 import fitz  # PyMuPDF
 import torch
 import uuid
+import pickle
+from rank_bm25 import BM25Okapi
 from PIL import Image
 from tqdm import tqdm
 from langchain.text_splitter import RecursiveCharacterTextSplitter
@@ -271,6 +273,8 @@ def main_ingest(pdf_paths, collection_name="doc_default"):
     db_manager = DatabaseManager()
     col = db_manager.get_collection(collection_name)
     miner = CompositeVisualMiner()
+
+    semantic_splitter = STE100SemanticSplitter(normal_text_size_limit=11.0)
     
     llm_manager = LLMManager()
     model, processor = llm_manager.load_vision_model()
@@ -327,9 +331,6 @@ def main_ingest(pdf_paths, collection_name="doc_default"):
                 full_content = f"--- SOURCE: {filename} | PAGE {i+1} ---\n"
                 full_content += visual_summary
                 full_content += f"[TEXT CONTENT]:\n{text}"
-
-                # Sayfa işleme döngüsünün üst kısımlarında sınıfı başlatalım
-                semantic_splitter = STE100SemanticSplitter(normal_text_size_limit=11.0) 
                 
                 # ... (Görsel işlemleri aynı kalacak) ...
                 
@@ -369,7 +370,30 @@ def main_ingest(pdf_paths, collection_name="doc_default"):
         gc.collect()
         torch.cuda.empty_cache()
 
-    logger.info(" Tüm işlemler tamamlandı.")
+    logger.info("BM25 İndeksi oluşturuluyor ve diske kaydediliyor...")
+    all_docs_data = col.get()
+    
+    if all_docs_data and all_docs_data['documents']:
+        tokenized_corpus = [doc.lower().split(" ") for doc in all_docs_data['documents']]
+        bm25 = BM25Okapi(tokenized_corpus)
+        
+        # Sadece modeli değil, ID ve metadataları da hizalı tutmak için paketliyoruz
+        bm25_cache = {
+            "bm25": bm25,
+            "ids": all_docs_data['ids'],
+            "documents": all_docs_data['documents'],
+            "metadatas": all_docs_data['metadatas']
+        }
+        
+        cache_path = os.path.join(CFG.ASSETS_DIR, "..", "bm25_cache.pkl")
+        with open(cache_path, "wb") as f:
+            pickle.dump(bm25_cache, f)
+        logger.info(f" BM25 Cache başarıyla kaydedildi: {cache_path}")
+    else:
+        logger.warning("Veritabanı boş, BM25 indeksi oluşturulamadı.")
+    # --- YENİ KODLAR BURADA BİTİYOR ---
+
+    logger.info("🎉 Tüm işlemler tamamlandı.")
 
 if __name__ == "__main__":
     data_folder = "data" 

@@ -2,7 +2,9 @@ import torch
 import gc
 from transformers import Qwen2_5_VLForConditionalGeneration, AutoProcessor, BitsAndBytesConfig
 from sentence_transformers import SentenceTransformer, CrossEncoder
-from config.settings import models
+
+# --- DEĞİŞTİRİLEN KISIM: Ayar Yükleyici Eklendi ---
+from src.utils import load_config
 
 class LLMManager:
     _instance = None
@@ -14,7 +16,15 @@ class LLMManager:
         return cls._instance
 
     def initialize(self):
-        self.device = models.device
+        # --- DEĞİŞTİRİLEN KISIM: YAML Ayarları Dinamik Olarak Okunuyor ---
+        self.config = load_config()
+        self.model_cfg = self.config.get('models', {})
+        
+        self.device = self.model_cfg.get('device', 'cpu')
+        self.vision_model_path = self.model_cfg.get('vision_model', 'Qwen/Qwen2.5-VL-7B-Instruct')
+        self.embedding_model_path = self.model_cfg.get('embedding_model', 'BAAI/bge-m3')
+        self.rerank_model_path = self.model_cfg.get('reranker_model', 'BAAI/bge-reranker-v2-m3')
+        
         self.vision_model = None
         self.vision_processor = None
         self.embedder = None
@@ -24,26 +34,26 @@ class LLMManager:
     def load_vision_model(self):
         """Qwen-VL Modelini INT4 formatında (4-bit) yükler."""
         if self.vision_model is None:
-            print(f"Yükleniyor: {models.vision_model} (4-Bit Quantized)")
+            # --- DEĞİŞTİRİLEN KISIM: vision_model_path kullanılıyor ---
+            print(f"Yükleniyor: {self.vision_model_path} (4-Bit Quantized)")
             try:
                 # 4-bit Quantization Ayarları
                 bnb_config = BitsAndBytesConfig(
                     load_in_4bit=True,
                     bnb_4bit_use_double_quant=True,
                     bnb_4bit_quant_type="nf4",
-                    # P100 için torch.float16 daha stabil olabilir, yeni nesil kartlar için bfloat16
                     bnb_4bit_compute_dtype=torch.float16 
                 )
 
                 self.vision_model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
-                    models.vision_model,
+                    self.vision_model_path,
                     device_map="auto",
                     quantization_config=bnb_config,
                     trust_remote_code=True
                 )
                 
                 self.vision_processor = AutoProcessor.from_pretrained(
-                    models.vision_model,
+                    self.vision_model_path,
                     trust_remote_code=True,
                     min_pixels=256*28*28,
                     max_pixels=1280*28*28
@@ -60,16 +70,18 @@ class LLMManager:
     def load_embedder(self):
         """Embedding (Vektör) Modelini yükler."""
         if self.embedder is None:
-            print(f" Yükleniyor: {models.embedding_model}")
-            self.embedder = SentenceTransformer(models.embedding_model, device=self.device)
+            # --- DEĞİŞTİRİLEN KISIM: embedding_model_path kullanılıyor ---
+            print(f" Yükleniyor: {self.embedding_model_path}")
+            self.embedder = SentenceTransformer(self.embedding_model_path, device=self.device)
             print(" Embedding Model Hazır.")
         return self.embedder
 
     def load_reranker(self):
         """Reranker (Sıralayıcı) Modelini yükler."""
         if self.reranker is None:
-            print(f"Yükleniyor: {models.rerank_model}")
-            self.reranker = CrossEncoder(models.rerank_model, device=self.device, trust_remote_code=True)
+            # --- DEĞİŞTİRİLEN KISIM: rerank_model_path kullanılıyor ---
+            print(f"Yükleniyor: {self.rerank_model_path}")
+            self.reranker = CrossEncoder(self.rerank_model_path, device=self.device, trust_remote_code=True)
             print(" Reranker Model Hazır.")
         return self.reranker
 

@@ -133,3 +133,21 @@ self_correction_prompt: |
   - Use the exact "Approved Alternatives" provided.
   - Preserve all technical measurements, component names, and spatial relationships from the original draft.
   - Output ONLY the final corrected text. Do not add any conversational filler or explanations.
+
+self_correction_prompt: |
+  Role: Senior Technical Systems Engineer & STE100 Auditor.
+  Task: Review the original draft against the provided STE100 Audit Feedback and rewrite it ONLY if necessary.
+
+  [ORIGINAL DRAFT]
+  {draft_answer}
+
+  [STE100 AUDIT FEEDBACK]
+  {feedback_report}
+
+  Instruction:
+  - Carefully read the 'Part of Speech' warnings in the feedback.
+  - Analyze how the suspicious word is used in the Original Draft. Is it used as a noun, a verb, or an adjective?
+  - If the word is used in the FORBIDDEN part of speech mentioned in the feedback, you MUST replace it with the suggested 'Approved Alternatives'.
+  - If the word is used in an ALLOWED part of speech (e.g., the feedback bans it as a verb, but you used it as a noun), DO NOT change it.
+  - Preserve all technical measurements, component names, and spatial relationships.
+  - Output ONLY the final text. If no changes are needed, output the exact Original Draft.

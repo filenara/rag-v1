@@ -19,3 +19,4 @@ bcrypt
 Pillow
 tqdm
 bitsandbytes 
+pickle
