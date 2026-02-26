@@ -14,7 +14,6 @@ bitsandbytes
 peft
 rank_bm25
 qwen-vl-utils
-langchain
 bcrypt
 Pillow
 tqdm

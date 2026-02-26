@@ -6,7 +6,7 @@ app:
 vector_db:
   persist_path: "./chroma_db"
   distance_metric: "cosine"
-  collection_name: "doc_v2_asset_store"
+  collection_name: "doc_store"
   bm25_cache_path: "data/bm25_cache.pkl"
 
 models:

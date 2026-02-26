@@ -10,7 +10,6 @@ import pickle
 from rank_bm25 import BM25Okapi
 from PIL import Image
 from tqdm import tqdm
-from langchain.text_splitter import RecursiveCharacterTextSplitter
 from qwen_vl_utils import process_vision_info
 
 
@@ -464,11 +463,27 @@ def main_ingest(pdf_paths, collection_name="doc_default"):
     logger.info("Tüm işlemler tamamlandı.")
 
 if __name__ == "__main__":
+    # Ayarlari yukle
+    cfg_data = load_config()
+    
+    # Varsayilan koleksiyon adini ayarlardan al
+    # Eger ayarlarda yoksa "doc_v2_asset_store" ismini yedek olarak kullan
+    target_collection = cfg_data.get("vector_db", {}).get("collection_name", "doc_v2_asset_store")
+    
+    # Verilerin oldugu klasor
     data_folder = "data" 
+    
     if os.path.exists(data_folder):
-        pdf_files = [os.path.join(data_folder, f) for f in os.listdir(data_folder) if f.lower().endswith(".pdf")]
+        pdf_files = [
+            os.path.join(data_folder, f) 
+            for f in os.listdir(data_folder) 
+            if f.lower().endswith(".pdf")
+        ]
+        
         if pdf_files:
-            # DİKKAT: Eski koleksiyon adını değiştirin veya DB'yi silin
-            main_ingest(pdf_files, "doc_v2_asset_store") 
+            # Ingestion islemini baslat
+            main_ingest(pdf_files, target_collection)
         else:
-            print("Klasörde PDF bulunamadı.")
+            logger.warning(f"'{data_folder}' klasorunde islenecek PDF dosyasi bulunamadi.")
+    else:
+        logger.error(f"Hata: '{data_folder}' klasoru mevcut degil.")
