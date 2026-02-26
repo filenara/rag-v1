@@ -1,37 +1,41 @@
 import os
-from config.settings import cfg # Eğer config dosyan varsa
-from src.database import DatabaseManager # İsmi VectorStoreManager değil DatabaseManager yapmıştık
-from src.retriever import HybridRetriever
+from src.rag_engine import RAGEngine
+from src.utils import load_config
 
-# Ingestion işlemi artık "admin_ingest.py" üzerinden yapılıyor.
-# Bu dosya sadece sistemin çalışıp çalışmadığını test etmek içindir.
 
 def main():
-    print("Sistem Arama Modu Başlatılıyor...")
+    print("Sistem Arama Modu Baslatiliyor...")
 
-    # 1. Veritabanını Bağla
-    db = DatabaseManager()
+    # 1. Ayarlari ve Motoru Hazirla
+    config = load_config()
+    collection_name = config.get("vector_db", {}).get("collection_name", "doc_v2_asset_store")
     
-    # 2. Arama Motorunu Hazırla
-    # Not: Retriever içinde embedding modeli yüklenecektir.
-    retriever = HybridRetriever(db)
+    engine = RAGEngine()
     
-    # 3. Örnek Sorgu (Test)
-    query = "Devre kartındaki hasar nerede?"
+    # 2. Ornek Sorgu (Test)
+    query = "Devre kartindaki hasar nerede?"
     print(f"\nSoru: {query}")
     
-    # Koleksiyon adını admin_ingest.py'de ne verdiysen o olmalı (örn: doc_kaggle_v1)
-    # Retriever kodunu incelemedik ama genellikle bir collection_name parametresi ister.
-    # Varsayılan olarak kodunda nasılsa öyle bırakıyorum.
-    docs, metas = retriever.search(query) 
+    # 3. Aramayi Yap
+    print("\nArama ve uretim islemi basladi, lutfen bekleyin...")
+    final_answer, context_text = engine.search_and_answer(
+        query=query, 
+        collection_name=collection_name,
+        history=[],
+        user_image=None,
+        use_ste100=False
+    ) 
     
-    print("\n--- BULUNAN DÖKÜMANLAR ---")
-    if docs:
-        for i, (d, m) in enumerate(zip(docs, metas)):
-            print(f"\n{i+1}. Sonuç (Kaynak: {m.get('source')} - Sayfa: {m.get('page')}):")
-            print(f"{d[:200]}...") 
+    print("\n--- URETILEN CEVAP ---")
+    print(final_answer)
+    
+    print("\n--- BULUNAN BAGLAM (CONTEXT) ---")
+    if context_text:
+        # Metin cok uzun olabilecegi icin ilk 500 karakteri yazdiriyoruz
+        print(f"{context_text[:500]}...")
     else:
-        print("Sonuç bulunamadı.")
+        print("Baglam bulunamadi.")
+
 
 if __name__ == "__main__":
     main()

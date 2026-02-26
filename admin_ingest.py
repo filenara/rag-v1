@@ -17,7 +17,7 @@ from qwen_vl_utils import process_vision_info
 # --- KENDİ MODÜLLERİMİZ ---
 from src.database import DatabaseManager
 from src.llm_manager import LLMManager
-from src.utils import load_prompts
+from src.utils import load_prompts, load_config
 
 # --- 1. AYARLAR VE LOGLAMA ---
 class CFG:
@@ -25,14 +25,13 @@ class CFG:
     MIN_HEIGHT = 80
     CHUNK_SIZE = 1000
     CHUNK_OVERLAP = 200
-    BATCH_SIZE = 10
+    BATCH_SIZE = 32
     CAPTION_MAX_TOKENS = 512
-    IMAGE_DPI_SCALE = 2.0  # 2x Zoom (Yazıların okunabilirliği için)
+    IMAGE_DPI_SCALE = 2.0  
     
-    # Dosya Yolları
     CHECKPOINT_FILE = "ingest_checkpoint.json"
     LOG_FILE = "ingest_status.log"
-    ASSETS_DIR = os.path.join("data", "assets") # Görseller buraya kaydedilecek
+    ASSETS_DIR = os.path.join("data", "assets") 
 
 # Asset klasörünü oluştur
 os.makedirs(CFG.ASSETS_DIR, exist_ok=True)
@@ -254,17 +253,61 @@ def save_page_asset(page, filename, page_num):
     except Exception as e:
         logger.error(f"Asset Kayıt Hatası ({filename}): {e}")
         return ""
+    
+def generate_caption_batch_safe(pil_images, model, processor, prompt_texts):
+    """Gorselleri toplu (batch) olarak isler ve aciklamalarini dondurur."""
+    messages_list = []
+    for img, txt in zip(pil_images, prompt_texts):
+        messages_list.append([
+            {"role": "user", "content": [{"type": "image", "image": img}, {"type": "text", "text": txt}]}
+        ])
+    
+    try:
+        text_inputs = [
+            processor.apply_chat_template(msg, tokenize=False, add_generation_prompt=True) 
+            for msg in messages_list
+        ]
+        image_inputs, video_inputs = process_vision_info(messages_list)
+        
+        inputs = processor(
+            text=text_inputs, 
+            images=image_inputs, 
+            videos=video_inputs, 
+            padding=True, 
+            return_tensors="pt"
+        ).to(model.device)
+        
+        with torch.no_grad():
+            generated_ids = model.generate(**inputs, max_new_tokens=CFG.CAPTION_MAX_TOKENS)
+        
+        generated_ids_trimmed = [
+            out_ids[len(in_ids):] 
+            for in_ids, out_ids in zip(inputs.input_ids, generated_ids)
+        ]
+        descriptions = processor.batch_decode(generated_ids_trimmed, skip_special_tokens=True)
+        return descriptions
+    except Exception as e:
+        logger.error(f"Toplu Caption Hatasi: {e}")
+        raise e
 
 # --- 4. DATA PIPELINE ---
 
 def save_batch(col, chunks, metadatas, embedder):
-    if not chunks: return
+    if not chunks: 
+        return
     try:
-        embeddings = embedder.encode(chunks, show_progress_bar=False, batch_size=4).tolist()
+        # batch_size 32'ye sabitlendi ve normalize_embeddings eklendi
+        embeddings = embedder.encode(
+            chunks, 
+            show_progress_bar=False, 
+            batch_size=32, 
+            normalize_embeddings=True
+        ).tolist()
+        
         ids = [str(uuid.uuid4()) for _ in chunks]
         col.add(documents=chunks, embeddings=embeddings, metadatas=metadatas, ids=ids)
     except Exception as e:
-        logger.error(f"Veritabanı Yazma Hatası: {e}")
+        logger.error(f"Veritabani Yazma Hatasi: {e}")
 
 def main_ingest(pdf_paths, collection_name="doc_default"):
     logger.info(f"🚀 Ingestion Başlatılıyor (Asset Store Mode). Koleksiyon: {collection_name}")
@@ -313,26 +356,45 @@ def main_ingest(pdf_paths, collection_name="doc_default"):
                 
                 if detected_images:
                     has_visual = True
-                    # 1. Sayfanın TAMAMINI Asset olarak kaydet (RAG Engine için)
-                    # Bu kısmı ellemeyin, RAG Engine hala kullanıcıya tam sayfayı gösterecek.
+                    # 1. Sayfanin TAMAMINI Asset olarak kaydet
                     asset_path = save_page_asset(page, filename, i+1)
                     
-                    # 2. Sadece KIRPILMIŞ görsellerin özetini çıkar (Captioning)
+                    # 2. Sadece KIRPILMIS gorsellerin ozetini cikar (Batch Processing)
                     visual_summary += "\n[VISUAL/TABLE DETECTED]:\n"
-                    # Sayfada birden fazla kırpılmış görsel/tablo olabilir, hepsini tek tek dönüyoruz
-                    for idx, img in enumerate(detected_images):
+                    
+                    safe_text = text[:2000] if text else "Metin bulunamadi."
+                    formatted_prompt = caption_prompt.replace("{page_text}", safe_text)
+                    
+                    batch_size = 3
+                    prompts = [formatted_prompt] * len(detected_images)
+                    all_captions = []
+                    
+                    for b_idx in range(0, len(detected_images), batch_size):
+                        img_batch = detected_images[b_idx:b_idx+batch_size]
+                        prompt_batch = prompts[b_idx:b_idx+batch_size]
+                        
                         try:
-                            # Modele artık tüm sayfa değil, sadece 'img' (kırpılmış bölge) gidiyor
-                            caption = generate_caption_safe(img, model, processor, caption_prompt)
-                            visual_summary += f"- Analysis {idx+1}: {caption}\n"
-                        except Exception as img_err:
-                            logger.error(f"Görsel analiz hatası: {img_err}")
-
-                full_content = f"--- SOURCE: {filename} | PAGE {i+1} ---\n"
-                full_content += visual_summary
-                full_content += f"[TEXT CONTENT]:\n{text}"
-                
-                # ... (Görsel işlemleri aynı kalacak) ...
+                            # Toplu islem denemesi
+                            batch_captions = generate_caption_batch_safe(
+                                img_batch, model, processor, prompt_batch
+                            )
+                            all_captions.extend(batch_captions)
+                        except Exception as batch_err:
+                            logger.warning(
+                                f"Toplu islem basarisiz (OOM olabilir), tekli isleme geciliyor: {batch_err}"
+                            )
+                            # Fallback: Tekli isleme donus
+                            for img, prp in zip(img_batch, prompt_batch):
+                                try:
+                                    cap = generate_caption_safe(img, model, processor, prp)
+                                    all_captions.append(cap)
+                                except Exception as single_err:
+                                    logger.error(f"Tekli gorsel analiz hatasi: {single_err}")
+                                    all_captions.append("[Visual Description Failed]")
+                    
+                    # Uretilen tum aciklamalari ozete ekle
+                    for idx, caption in enumerate(all_captions):
+                        visual_summary += f"- Analysis {idx+1}: {caption}\n"
                 
                 # Sadece düz 'text' almak yerine, anlamsal chunk'ları alıyoruz
                 page_chunks = semantic_splitter.extract_semantic_chunks(page)
@@ -380,20 +442,26 @@ def main_ingest(pdf_paths, collection_name="doc_default"):
         # Sadece modeli değil, ID ve metadataları da hizalı tutmak için paketliyoruz
         bm25_cache = {
             "bm25": bm25,
-            "ids": all_docs_data['ids'],
-            "documents": all_docs_data['documents'],
-            "metadatas": all_docs_data['metadatas']
+            "ids": all_docs_data["ids"],
+            "documents": all_docs_data["documents"],
+            "metadatas": all_docs_data["metadatas"]
         }
         
-        cache_path = os.path.join(CFG.ASSETS_DIR, "..", "bm25_cache.pkl")
+        # Ayarları yükle ve yolu dinamik al
+        cfg_data = load_config()
+        cache_path = cfg_data.get("vector_db", {}).get("bm25_cache_path", "data/bm25_cache.pkl")
+        
+        # Dizin yoksa oluştur
+        os.makedirs(os.path.dirname(cache_path), exist_ok=True)
+        
         with open(cache_path, "wb") as f:
             pickle.dump(bm25_cache, f)
-        logger.info(f" BM25 Cache başarıyla kaydedildi: {cache_path}")
+        logger.info(f"BM25 Cache başarıyla kaydedildi: {cache_path}")
     else:
         logger.warning("Veritabanı boş, BM25 indeksi oluşturulamadı.")
     # --- YENİ KODLAR BURADA BİTİYOR ---
 
-    logger.info("🎉 Tüm işlemler tamamlandı.")
+    logger.info("Tüm işlemler tamamlandı.")
 
 if __name__ == "__main__":
     data_folder = "data" 

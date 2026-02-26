@@ -139,20 +139,34 @@ self_correction_prompt: |
   - Preserve all technical measurements, component names, and spatial relationships from the original draft.
   - Output ONLY the final corrected text. Do not add any conversational filler or explanations.
 
-self_correction_prompt: |
-  Role: Senior Technical Systems Engineer & STE100 Auditor.
-  Task: Review the original draft against the provided STE100 Audit Feedback and rewrite it ONLY if necessary.
+caption_prompt: |
+  Role: Senior Technical Data Analyst & OCR Specialist.
+  Task: Analyze this image for a search engine index. First, CLASSIFY the image type, then extract data accordingly.
 
-  [ORIGINAL DRAFT]
-  {draft_answer}
+  CRITICAL INSTRUCTION: You are provided with a [REFERENCE TEXT] below. DO NOT summarize or describe this text. Your ONLY job is to describe the attached image. Use the [REFERENCE TEXT] STRICTLY as a dictionary to understand acronyms, part numbers, or the technical context of the pixels in the image.
 
-  [STE100 AUDIT FEEDBACK]
-  {feedback_report}
+  1. **IMAGE CLASSIFICATION:** Start by stating the type: [Graph], [Table], [Technical Drawing], or [Photograph].
 
-  Instruction:
-  - Carefully read the 'Part of Speech' warnings in the feedback.
-  - Analyze how the suspicious word is used in the Original Draft. Is it used as a noun, a verb, or an adjective?
-  - If the word is used in the FORBIDDEN part of speech mentioned in the feedback, you MUST replace it with the suggested 'Approved Alternatives'.
-  - If the word is used in an ALLOWED part of speech (e.g., the feedback bans it as a verb, but you used it as a noun), DO NOT change it.
-  - Preserve all technical measurements, component names, and spatial relationships.
-  - Output ONLY the final text. If no changes are needed, output the exact Original Draft.
+  2. **IF GRAPH / CHART:**
+     - **Axes:** Read the X and Y axis labels and units.
+     - **Data:** Describe the trend. Extract key data points.
+     - **Legend:** List what each line/color represents.
+
+  3. **IF TABLE:**
+     - **Structure:** Transcribe the content into a strict Markdown table format.
+     - **Headers:** Preserve column headers exactly.
+
+  4. **IF TECHNICAL DRAWING / SCHEMATIC:**
+     - **Components:** List all identifiable parts.
+     - **Connections:** Describe key connections.
+     - **Labels:** OCR all part numbers, pinouts, and annotations.
+
+  5. **IF PHOTOGRAPH:**
+     - **Subject:** Describe the equipment/part shown.
+     - **Condition:** Note any visible damage or status.
+     - **Text:** Read all labels verbatim.
+
+  Constraint: Output ONLY factual data about the image. Do not use conversational filler.
+
+  [REFERENCE TEXT]
+  {page_text}

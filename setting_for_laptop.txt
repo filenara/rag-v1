@@ -1,3 +1,5 @@
+##bunu internete açık bilgisayarda denersem diye tuttum modeli indirmeden denemek için
+
 app:
   name: "In-House AI Asistan"
   version: "2.0-Alpha"
@@ -10,15 +12,15 @@ vector_db:
   bm25_cache_path: "data/bm25_cache.pkl"
 
 models:
-  device: "cuda"
-  vision_model: "./local_models/Qwen2.5-VL-7B-Instruct"
-  embedding_model: "./local_models/bge-m3"
-  reranker_model: "./local_models/bge-reranker-v2-m3"
+  device: "cuda"                  # "cpu" veya "cuda"
+  vision_model: "Qwen/Qwen2.5-VL-7B-Instruct"
+  embedding_model: "BAAI/bge-m3"
+  reranker_model: "BAAI/bge-reranker-v2-m3"
 
 ingestion:
   chunk_size: 1000
   chunk_overlap: 200
-  batch_size: 32
+  batch_size: 10
 
 system:
   use_mock_llm: false

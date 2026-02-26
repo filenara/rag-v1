@@ -3,9 +3,9 @@ streamlit-authenticator==0.2.3
 chromadb
 sentence-transformers
 pymupdf
-pyyaml
-torch
-torchvision
+pyYAML #pyyaml
+# torch
+# torchvision
 numpy
 transformers
 accelerate
@@ -18,5 +18,3 @@ langchain
 bcrypt
 Pillow
 tqdm
-bitsandbytes 
-pickle

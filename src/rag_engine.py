@@ -7,29 +7,28 @@ from rank_bm25 import BM25Okapi
 from qwen_vl_utils import process_vision_info
 from src.database import DatabaseManager
 from src.llm_manager import LLMManager
-from src.utils import load_prompts
+from src.utils import load_prompts, load_config
+
 
 class RAGEngine:
     def refine_answer(self, draft_text, feedback_list, model, processor):
         """
-        Guard'dan gelen hata raporunu ve YAML'daki promptu kullanarak 
-        Qwen-VL'e metni yeniden ve hatasız yazdırır.
+        Guard'dan gelen hata raporunu ve YAML'daki promptu kullanarak
+        Qwen-VL'e metni yeniden ve hatasiz yazdirir.
         """
-        print("🔄 [Self-Correction] STE100 ihlalleri düzeltiliyor...")
+        print("[Self-Correction] STE100 ihlalleri duzeltiliyor...")
         
-        # Liste halindeki hataları alt alta tek bir metin yap
         feedback_str = "\n".join(feedback_list)
+        template = self.prompts.get(
+            "self_correction_prompt",
+            "Fix this:\n{draft_answer}\nErrors:\n{feedback_report}"
+        )
         
-        # Şablonu YAML'dan çek
-        template = self.prompts.get('self_correction_prompt', "Fix this:\n{draft_answer}\nErrors:\n{feedback_report}")
-        
-        # Değişkenleri prompt içine göm
         prompt_text = template.format(
             draft_answer=draft_text,
             feedback_report=feedback_str
         )
         
-        # Model çıkarımı (Inference)
         messages = [{"role": "user", "content": [{"type": "text", "text": prompt_text}]}]
         text_input = processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
         inputs = processor(text=[text_input], padding=True, return_tensors="pt").to(model.device)
@@ -43,26 +42,22 @@ class RAGEngine:
         return final_answer
     
     def __init__(self):
-        print("⚡ RAGEngine Başlatılıyor (Conversation Aware + Multi-Query RRF Mode)...")
+        print("RAGEngine Baslatiliyor (Conversation Aware + RRF Mode)...")
         self.db = DatabaseManager()
         self.llm_manager = LLMManager()
-        # YAML'dan promptları yükle
         self.prompts = load_prompts()
 
     def _construct_system_prompt(self, use_ste100=False):
-        """Arayüzden gelen komuta göre prompt seçimi yapar."""
         if use_ste100:
-            # STE100 Modu Açık: Katı kuralları yükle
-            persona = self.prompts.get('system_persona', 'You are a helpful assistant.')
-            rules = self.prompts.get('ste100_rules', '')
+            persona = self.prompts.get("system_persona", "You are a helpful assistant.")
+            rules = self.prompts.get("ste100_rules", "")
             return f"{persona}\n\n---\n{rules}"
         else:
-            # STE100 Modu Kapalı: Normal teknik asistan rolünü yükle
-            persona = self.prompts.get('system_persona_standard', 'You are a technical assistant.')
+            persona = self.prompts.get("system_persona_standard", "You are a technical assistant.")
             return persona
 
     def _is_feedback_intent(self, query):
-        feedback_words = ["yanlış", "hatalı", "tekrar bak", "düzelt", "wrong", "incorrect", "re-examine", "look again"]
+        feedback_words = ["yanlis", "hatali", "tekrar bak", "duzelt", "wrong", "incorrect", "re-examine", "look again"]
         return any(word in query.lower() for word in feedback_words)
 
     def _format_history(self, history):
@@ -70,72 +65,52 @@ class RAGEngine:
             return "No previous conversation."
         formatted = ""
         for turn in history:
-            role = "User" if turn['role'] == 'user' else "Assistant"
-            content = str(turn['content']).replace('\n', ' ')
+            role = "User" if turn.get("role") == "user" else "Assistant"
+            content = str(turn.get("content")).replace("\n", " ")
             formatted += f"{role}: {content}\n"
         return formatted
 
-    def _generate_multi_queries(self, original_query, model, processor, n=3):
-        prompt = f"Question: '{original_query}'. To search for this question in a technical database, write {n} different alternative questions in English. Just list the questions, no numbering."
-        messages = [{"role": "user", "content": [{"type": "text", "text": prompt}]}]
-        try:
-            text_input = processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
-            inputs = processor(text=[text_input], padding=True, return_tensors="pt").to(model.device)
-            with torch.no_grad():
-                generated_ids = model.generate(**inputs, max_new_tokens=100)
-            output = processor.batch_decode(generated_ids, skip_special_tokens=True)[0]
-            raw_queries = output.split(prompt)[-1].strip().split('\n')
-            queries = [q.strip() for q in raw_queries if len(q) > 5]
-            return [original_query] + queries[:n]
-        except Exception as e:
-            print(f"⚠️ Sorgu çoğaltma hatası: {e}")
-            return [original_query]
+    def search_and_answer(self, query, collection_name, history=None, user_image=None, use_ste100=False):
+        if history is None:
+            history = []
 
-    def search_and_answer(self, query, collection_name, history=[], user_image=None, use_ste100=False):
-        # 1. MODELLERİ ÇAĞIR
         embedder = self.llm_manager.load_embedder()
         reranker = self.llm_manager.load_reranker()
         model, processor = self.llm_manager.load_vision_model()
         
-        # 2. NİYET VE BAĞLAM ANALİZİ
         is_feedback = self._is_feedback_intent(query)
-        intent_instruction = "Answer based on the context and previous conversation." # Varsayılan instruction
+        intent_instruction = "Answer based on the context and previous conversation."
         
         context_text = ""
         best_meta = {}
         input_image = None
         
-        # Geçmişi formatla
         history_text = self._format_history(history)
 
-        # A) Feedback Durumu
         if is_feedback and len(history) > 0:
-            print("[Niyet] Feedback algılandı. Önceki bağlam tekrar inceleniyor...")
+            print("[Niyet] Feedback algilandi. Onceki baglam tekrar inceleniyor...")
             for turn in reversed(history):
-                if turn.get("role") == "assistant" and "context" in turn:
-                    context_text = turn["context"]
+                if turn.get("role") == "assistant" and "context_text" in turn:
+                    context_text = turn["context_text"]
                     break
             
             if not context_text:
-                print("[Uyarı] Geçmişte context bulunamadı, yeni arama yapılıyor...")
+                print("[Uyari] Gecmiste context bulunamadi, yeni arama yapiliyor...")
                 is_feedback = False 
             else:
                 intent_instruction = "The user indicated the previous answer was incorrect. Carefully re-examine the provided context."
         
-        # B) Yeni Arama Durumu
         if not is_feedback:
             print(f"[Niyet] Yeni arama: {query}")
             col = self.db.get_collection(collection_name)
-            search_queries = self._generate_multi_queries(query, model, processor)
             
-            # ... (Buradaki RRF ve Search mantığınız aynı kalıyor) ...
-            # Kısalık olması için RRF kod bloğunu özet geçiyorum, sizin önceki kodunuz buraya gelecek
-            # --- RRF SİSTEMİ BAŞLANGICI ---
-            bm25_cache_path = os.path.join("data", "bm25_cache.pkl")
+            search_queries = [query]
             
-            # 1. Cache var mı kontrol et
+            config_data = load_config()
+            bm25_cache_path = config_data.get("vector_db", {}).get("bm25_cache_path", "data/bm25_cache.pkl")
+            
             if os.path.exists(bm25_cache_path):
-                print("⚡ BM25 İndeksi diskten (cache) yükleniyor...")
+                print("BM25 Indeksi diskten (cache) yukleniyor...")
                 with open(bm25_cache_path, "rb") as f:
                     cache = pickle.load(f)
                 bm25 = cache["bm25"]
@@ -143,14 +118,14 @@ class RAGEngine:
                 documents = cache["documents"]
                 metadatas = cache["metadatas"]
             else:
-                # 2. Cache yoksa veritabanından anlık çek (Fallback)
-                print("⚠️ BM25 Cache bulunamadı, anlık indeks oluşturuluyor...")
+                print("[Uyari] BM25 Cache bulunamadi, anlik indeks olusturuluyor...")
                 all_docs_data = col.get() 
-                documents = all_docs_data['documents']
-                ids = all_docs_data['ids']
-                metadatas = all_docs_data['metadatas']
+                documents = all_docs_data["documents"]
+                ids = all_docs_data["ids"]
+                metadatas = all_docs_data["metadatas"]
                 
-                if not documents: return "Veritabanı boş.", ""
+                if not documents:
+                    return "Veritabani bos.", ""
                 tokenized_corpus = [doc.lower().split(" ") for doc in documents]
                 bm25 = BM25Okapi(tokenized_corpus)
 
@@ -160,18 +135,19 @@ class RAGEngine:
             k_constant = 60
             
             for q in search_queries:
-                q_vec = embedder.encode([q]).tolist()
+                q_vec = embedder.encode([q], normalize_embeddings=True).tolist()
                 vec_res = col.query(query_embeddings=q_vec, n_results=10)
                 
-                if vec_res['ids']:
-                    for rank, doc_id in enumerate(vec_res['ids'][0]):
+                if vec_res["ids"]:
+                    for rank, doc_id in enumerate(vec_res["ids"][0]):
                         if doc_id not in doc_scores: 
                             doc_scores[doc_id] = 0
                             try:
                                 idx = ids.index(doc_id)
                                 doc_meta_map[doc_id] = metadatas[idx]
                                 doc_text_map[doc_id] = documents[idx]
-                            except ValueError: continue
+                            except ValueError:
+                                continue
                         doc_scores[doc_id] += 1 / (k_constant + rank)
                         
                 bm25_scores = bm25.get_scores(q.lower().split(" "))
@@ -186,7 +162,8 @@ class RAGEngine:
                     doc_scores[doc_id] += 1 / (k_constant + rank)
                     
             sorted_candidates = sorted(doc_scores.items(), key=lambda item: item[1], reverse=True)[:5]
-            if not sorted_candidates: return "İlgili sonuç bulunamadı.", ""
+            if not sorted_candidates:
+                return "Ilgili sonuc bulunamadi.", ""
             
             candidates_text = [doc_text_map[item[0]] for item in sorted_candidates]
             candidates_meta = [doc_meta_map[item[0]] for item in sorted_candidates]
@@ -195,28 +172,21 @@ class RAGEngine:
             best_idx = np.argmax(scores)
             context_text = candidates_text[best_idx]
             best_meta = candidates_meta[best_idx]
-            # --- RRF SONU ---
 
-            # Görsel Yükleme
             if user_image is not None:
-                print("Kullanıcı Görseli Yükleniyor (Veritabanı görseli ezildi)...")
+                print("Kullanici Gorseli Yukleniyor (Veritabani gorseli ezildi)...")
                 input_image = user_image
             else:
                 image_path = best_meta.get("image_path", "")
                 if image_path and os.path.exists(image_path):
-                    print(f" Görsel Bağlam Yükleniyor: {image_path}")
+                    print(f"Gorsel Baglam Yukleniyor: {image_path}")
                     try:
                         input_image = Image.open(image_path)
                     except Exception as e:
-                        print(f"Resim yükleme hatası: {e}")
+                        print(f"Resim yukleme hatasi: {e}")
 
-        # --- CEVAP ÜRETİMİ (Şablon Doldurma) ---
+        template = self.prompts.get("response_template", "Context: {context_text}\nQuestion: {query}")
         
-        # 1. Şablonu Yükle
-        template = self.prompts.get('response_template', "Context: {context_text}\nQuestion: {query}")
-        
-        # 2. Değişkenleri Şablona Göm
-        # Burada template içindeki {intent_instruction}, {history_text} vb. yerlerini dolduruyoruz.
         user_prompt_text = template.format(
             intent_instruction=intent_instruction,
             history_text=history_text,
@@ -224,16 +194,13 @@ class RAGEngine:
             query=query
         )
 
-        # 3. Mesaj Yapısını Kur
         user_content = []
         if input_image:
             user_content.append({"type": "image", "image": input_image})
-            # Sizin istediğiniz görsel uyarısı:
             user_prompt_text = "[IMAGE ATTACHED TO THIS MESSAGE]\n" + user_prompt_text
             
         user_content.append({"type": "text", "text": user_prompt_text})
 
-        # 4. Sistem Promptunu Hazırla (STE100 Rules)
         system_instruction = self._construct_system_prompt(use_ste100)
 
         messages = [
@@ -241,7 +208,6 @@ class RAGEngine:
             {"role": "user", "content": user_content}
         ]
         
-        # Inference
         text_input = processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
         image_inputs, video_inputs = process_vision_info(messages)
         
@@ -259,12 +225,12 @@ class RAGEngine:
         response = processor.batch_decode(generated_ids, skip_special_tokens=True)[0]
         final_answer = response.split("assistant\n")[-1] if "assistant\n" in response else response
 
-        # Kaynak Bilgisi Ekle
         source_info = ""
         if best_meta:
-            src_name = os.path.basename(best_meta.get('source', 'Unknown'))
-            pg_num = best_meta.get('page', '?')
+            src_name = os.path.basename(best_meta.get("source", "Unknown"))
+            pg_num = best_meta.get("page", "?")
             source_info = f"\n\n*(Kaynak: {src_name}, Sayfa {pg_num})*"
-            if input_image: source_info += " [Görsel Analiz Yapıldı]"
+            if input_image:
+                source_info += " [Gorsel Analiz Yapildi]"
 
         return final_answer + source_info, context_text
