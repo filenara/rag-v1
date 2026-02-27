@@ -1,3 +1,6 @@
+#Bu py dosyası 5 farklı modüle bölünmüş olup kullanılmamaktadır.
+
+
 import os
 import io
 import gc

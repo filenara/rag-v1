@@ -1,42 +1,40 @@
 import yaml
-import json
-import os
+import logging
+from pathlib import Path
+from typing import Dict, Any
+
+logger = logging.getLogger(__name__)
 
 
-def load_config(config_path="config/settings.yaml"):
-    """Sistem ayarlarini barindiran settings.yaml dosyasini yukler."""
-    if os.path.exists(config_path):
+def load_config(config_path: str = "config/settings.yaml") -> Dict[str, Any]:
+    path = Path(config_path)
+    if path.exists():
         try:
-            with open(config_path, "r", encoding="utf-8") as f:
+            with open(path, "r", encoding="utf-8") as f:
                 return yaml.safe_load(f) or {}
         except Exception as e:
-            print(f"Ayar dosyasi okuma hatasi ({config_path}): {e}")
+            logger.error(f"Ayar dosyasi okuma hatasi ({config_path}): {e}")
     else:
-        print(f"Uyari: Ayar dosyasi ({config_path}) bulunamadi.")
+        logger.warning(f"Ayar dosyasi ({config_path}) bulunamadi.")
     return {}
 
 
-def load_secrets(secrets_path="config/secrets.yaml"):
-    """Kimlik dogrulama ayarlarini barindiran secrets.yaml dosyasini yukler."""
-    if os.path.exists(secrets_path):
+def load_secrets(secrets_path: str = "config/secrets.yaml") -> Dict[str, Any]:
+    path = Path(secrets_path)
+    if path.exists():
         try:
-            with open(secrets_path, "r", encoding="utf-8") as f:
+            with open(path, "r", encoding="utf-8") as f:
                 return yaml.safe_load(f) or {}
         except Exception as e:
-            print(f"Gizli ayar dosyasi okuma hatasi ({secrets_path}): {e}")
+            logger.error(f"Gizli ayar dosyasi okuma hatasi ({secrets_path}): {e}")
     else:
-        print(f"Uyari: Gizli ayar dosyasi ({secrets_path}) bulunamadi.")
+        logger.warning(f"Gizli ayar dosyasi ({secrets_path}) bulunamadi.")
     return {}
 
 
-def load_prompts():
-    """
-    Tum prompt metinlerini (prompts.yaml) yukler.
-    Boylece kod icinde uzun stringler tutmak zorunda kalmayiz.
-    """
-    prompts_path = "config/prompts.yaml"
+def load_prompts() -> Dict[str, str]:
+    prompts_path = Path("config/prompts.yaml")
     
-    # Varsayilan Promptlar (Dosya yoksa hata vermesin diye)
     default_prompts = {
         "system_persona": "You are a helpful assistant.",
         "ste100_rules": "",
@@ -48,14 +46,17 @@ def load_prompts():
         )
     }
 
-    if os.path.exists(prompts_path):
+    if prompts_path.exists():
         try:
             with open(prompts_path, "r", encoding="utf-8") as f:
-                return yaml.safe_load(f)
+                loaded_prompts = yaml.safe_load(f)
+                if isinstance(loaded_prompts, dict):
+                    return loaded_prompts
+                logger.warning("Prompts dosyasi gecerli bir sozluk degil.")
         except Exception as e:
-            print(f"Hata: {prompts_path} okunamadi: {e}")
+            logger.error(f"Hata: {prompts_path} okunamadi: {e}")
             return default_prompts
     else:
-        print(f"Uyari: {prompts_path} bulunamadi. Varsayilanlar kullaniliyor.")
-        return default_prompts
-
+        logger.warning(f"{prompts_path} bulunamadi. Varsayilanlar kullaniliyor.")
+        
+    return default_prompts

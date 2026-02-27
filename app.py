@@ -1,12 +1,13 @@
+import logging
 import streamlit as st
 import streamlit_authenticator as stauth
-import yaml
-from yaml.loader import SafeLoader
 
 from src.rag_engine import RAGEngine
-from src.ste100_guard import STE100Guard
-from src.utils import load_config
+from src.utils import load_config, load_secrets
 
+# Merkezi Loglama Ayari
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+logger = logging.getLogger(__name__)
 
 st.set_page_config(
     page_title="STE100 Technical Assistant",
@@ -14,45 +15,45 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-
 @st.cache_resource
 def get_engine():
     return RAGEngine()
 
-
-@st.cache_resource
-def get_guard():
-    return STE100Guard()
-
-
 engine = get_engine()
-guard = get_guard()
 config = load_config()
 
 COLLECTION_NAME = config.get("vector_db", {}).get("collection_name", "doc_v2_asset_store")
 
-
 def load_auth():
-    with open("config/secrets.yaml") as file:
-        config_auth = yaml.load(file, Loader=SafeLoader)
-    
-    authenticator = stauth.Authenticate(
-        config_auth["credentials"],
-        config_auth["cookie"]["name"],
-        config_auth["cookie"]["key"],
-        config_auth["cookie"]["expiry_days"]
-    )
-    return authenticator
-
+    config_auth = load_secrets()
+    if not config_auth:
+        logger.error("Kimlik dogrulama ayarlari yuklenemedi veya bos.")
+        return None
+        
+    try:
+        authenticator = stauth.Authenticate(
+            config_auth.get("credentials", {}),
+            config_auth.get("cookie", {}).get("name", "ste100_cookie"),
+            config_auth.get("cookie", {}).get("key", "signature_key"),
+            config_auth.get("cookie", {}).get("expiry_days", 30)
+        )
+        return authenticator
+    except Exception as e:
+        logger.error(f"Kimlik dogrulama yapilandirma hatasi: {e}")
+        return None
 
 authenticator = load_auth()
 
-try:
-    name, authentication_status, username = authenticator.login("main")
-except Exception as e:
-    st.error(f"Kimlik dogrulama modulu baslatilamadi: {e}")
-    name, authentication_status, username = None, None, None
-
+if authenticator:
+    try:
+        name, authentication_status, username = authenticator.login("main")
+    except Exception as e:
+        logger.error(f"Kimlik dogrulama modulu baslatilamadi: {e}")
+        st.error("Giris sistemi su anda kullanilamiyor. Lutfen yoneticiye basvurun.")
+        name, authentication_status, username = None, None, None
+else:
+    st.error("Sistem ayarlari yuklenemedigi icin giris yapilamiyor.")
+    authentication_status = None
 
 if authentication_status:
     with st.sidebar:
@@ -89,6 +90,7 @@ if authentication_status:
     if "messages" not in st.session_state:
         st.session_state.messages = []
 
+    # Gecmis mesajlari render et
     for msg in st.session_state.messages:
         with st.chat_message(msg["role"]):
             st.markdown(msg["content"])
@@ -111,7 +113,6 @@ if authentication_status:
                             st.info("Arka planda uygulanan duzeltmeler:")
                         else:
                             st.error("Duzeltilmeyen Ihlaller (Siki Denetim Kapali):")
-                        
                         for f in feedback:
                             st.markdown(f)
                     else:
@@ -132,53 +133,21 @@ if authentication_status:
             status_container = st.status("Analiz ediliyor...", expanded=True)
             
             try:
-                status_container.write("Teknik dokumanlar taraniyor...")
+                status_container.write("Motor cagiriliyor...")
                 
-                draft_text, context_text = engine.search_and_answer(
+                # Tum is mantigi (STE100 denetimi dahil) artik serviste yapiliyor
+                final_text, context_text, is_compliant, was_corrected, feedback_report = engine.search_and_answer(
                     query=prompt, 
                     collection_name=COLLECTION_NAME,
                     history=st.session_state.messages,
-                    use_ste100=ste100_mode
+                    use_ste100=ste100_mode,
+                    strict_mode=strict_mode
                 )
                 
-                final_text = draft_text
-                was_corrected = False
-                feedback_report = []
-                is_compliant = True
-
-                if ste100_mode:
-                    status_container.write("STE100 kurallari denetleniyor...")
-                    is_compliant, feedback_report = guard.analyze_and_report(draft_text)
-                    
-                    if not is_compliant and strict_mode:
-                        max_retries = 2
-                        retries = 0
-                        current_text = draft_text
-                        model, processor = engine.llm_manager.load_vision_model()
-                        
-                        while not is_compliant and retries < max_retries:
-                            retries += 1
-                            status_container.write(f"Ihlaller duzeltiliyor... (Deneme {retries}/{max_retries})")
-                            
-                            previous_text = current_text
-                            current_text = engine.refine_answer(
-                                current_text,
-                                feedback_report,
-                                model,
-                                processor
-                            )
-                            
-                            if current_text.strip() == previous_text.strip():
-                                break
-                                
-                            is_compliant, feedback_report = guard.analyze_and_report(current_text)
-                            
-                        final_text = current_text
-                        was_corrected = True
-
                 status_container.update(label="Islem Tamamlandi", state="complete", expanded=False)
                 st.markdown(final_text)
                 
+                # Sadece sonuclari UI'da gosteriyoruz
                 if ste100_mode:
                     if is_compliant:
                         expander_title = "Teknik Rapor (Kusursuz)"
@@ -218,5 +187,6 @@ if authentication_status:
                 })
 
             except Exception as e:
-                status_container.update(label="Hata", state="error")
-                st.error(f"Bir hata olustu: {str(e)}")
+                logger.error(f"Uretim sirasinda kritik hata: {e}", exc_info=True)
+                status_container.update(label="Sistem Hatasi", state="error")
+                st.error("Isteginizi islerken sistemsel bir sorun olustu. Lutfen daha sonra tekrar deneyin.")
