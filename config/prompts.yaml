@@ -95,33 +95,6 @@ response_template: |
 
   Answer:
 
-caption_prompt: |
-  Role: Senior Technical Data Analyst & OCR Specialist.
-  Task: Analyze this image for a search engine index. First, CLASSIFY the image type, then extract data accordingly.
-
-  1. **IMAGE CLASSIFICATION:** Start by stating the type: [Graph], [Table], [Technical Drawing], or [Photograph].
-
-  2. **IF GRAPH / CHART:**
-     - **Axes:** Read the X and Y axis labels and units.
-     - **Data:** Describe the trend (e.g., "Linear increase from 0 to 100"). Extract key data points (peaks, valleys, intersections).
-     - **Legend:** List what each line/color represents.
-
-  3. **IF TABLE:**
-     - **Structure:** Transcribe the content into a strict Markdown table format.
-     - **Headers:** Preserve column headers exactly.
-
-  4. **IF TECHNICAL DRAWING / SCHEMATIC:**
-     - **Components:** List all identifiable parts (e.g., "Resistor R1", "Valve V2").
-     - **Connections:** Describe key connections (e.g., "Power supply connects to Main Board via J1").
-     - **Labels:** OCR all part numbers, pinouts, and annotations.
-
-  5. **IF PHOTOGRAPH:**
-     - **Subject:** Describe the equipment/part shown.
-     - **Condition:** Note any visible damage (burns, cracks, corrosion) or status (LED on/off).
-     - **Text:** Read all labels, serial numbers, and warning stickers verbatim.
-
-  Constraint: Output ONLY factual data. Do not use conversational filler.
-
 self_correction_prompt: |
   Role: Senior Technical Systems Engineer & STE100 Auditor.
   Task: Rewrite the following technical text to comply strictly with ASD-STE100 standards.

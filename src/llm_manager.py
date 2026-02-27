@@ -3,8 +3,8 @@ import gc
 from transformers import Qwen2_5_VLForConditionalGeneration, AutoProcessor, BitsAndBytesConfig
 from sentence_transformers import SentenceTransformer, CrossEncoder
 
-# --- DEĞİŞTİRİLEN KISIM: Ayar Yükleyici Eklendi ---
 from src.utils import load_config
+
 
 class LLMManager:
     _instance = None
@@ -16,7 +16,6 @@ class LLMManager:
         return cls._instance
 
     def initialize(self):
-        # --- DEĞİŞTİRİLEN KISIM: YAML Ayarları Dinamik Olarak Okunuyor ---
         self.config = load_config()
         self.model_cfg = self.config.get('models', {})
         
@@ -29,15 +28,13 @@ class LLMManager:
         self.vision_processor = None
         self.embedder = None
         self.reranker = None
-        print(f"LLM Manager Başlatıldı. (Cihaz: {self.device})")
+        print(f"LLM Manager Baslatildi. (Cihaz: {self.device})")
 
     def load_vision_model(self):
-        """Qwen-VL Modelini INT4 formatında (4-bit) yükler."""
+        """Qwen-VL Modelini INT4 formatinda (4-bit) yukler."""
         if self.vision_model is None:
-            # --- DEĞİŞTİRİLEN KISIM: vision_model_path kullanılıyor ---
-            print(f"Yükleniyor: {self.vision_model_path} (4-Bit Quantized)")
+            print(f"Yukleniyor: {self.vision_model_path} (4-Bit Quantized)")
             try:
-                # 4-bit Quantization Ayarları
                 bnb_config = BitsAndBytesConfig(
                     load_in_4bit=True,
                     bnb_4bit_use_double_quant=True,
@@ -47,7 +44,7 @@ class LLMManager:
 
                 self.vision_model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
                     self.vision_model_path,
-                    device_map="auto",
+                    device_map={"": self.device},
                     quantization_config=bnb_config,
                     trust_remote_code=True
                 )
@@ -58,44 +55,42 @@ class LLMManager:
                     min_pixels=256*28*28,
                     max_pixels=1280*28*28
                 )
-                print(" Vision Model Hazır (Optimize Edildi).")
+                print("Vision Model Hazir (Optimize Edildi).")
             except Exception as e:
-                print(f" Vision Model Hatası: {e}")
+                print(f"Vision Model Hatasi: {e}")
                 raise e
         else:
-            print("Vision Model zaten hafızada, tekrar yüklenmiyor.")
+            print("Vision Model zaten hafizada, tekrar yuklenmiyor.")
             
         return self.vision_model, self.vision_processor
         
     def load_embedder(self):
-        """Embedding (Vektör) Modelini yükler."""
+        """Embedding (Vektor) Modelini yukler."""
         if self.embedder is None:
-            # --- DEĞİŞTİRİLEN KISIM: embedding_model_path kullanılıyor ---
-            print(f" Yükleniyor: {self.embedding_model_path}")
+            print(f"Yukleniyor: {self.embedding_model_path}")
             self.embedder = SentenceTransformer(self.embedding_model_path, device=self.device)
-            print(" Embedding Model Hazır.")
+            print("Embedding Model Hazir.")
         return self.embedder
 
     def load_reranker(self):
-        """Reranker (Sıralayıcı) Modelini yükler."""
+        """Reranker (Siralayici) Modelini yukler."""
         if self.reranker is None:
-            # --- DEĞİŞTİRİLEN KISIM: rerank_model_path kullanılıyor ---
-            print(f"Yükleniyor: {self.rerank_model_path}")
+            print(f"Yukleniyor: {self.rerank_model_path}")
             self.reranker = CrossEncoder(self.rerank_model_path, device=self.device, trust_remote_code=True)
-            print(" Reranker Model Hazır.")
+            print("Reranker Model Hazir.")
         return self.reranker
 
     def unload_vision_model(self):
         """
-        Ağır Vision modelini hafızadan siler. 
-        Ingestion bittiğinde veya sadece metin araması yaparken çağrılabilir.
+        Agir Vision modelini hafizadan siler. 
+        Ingestion bittiginde veya sadece metin aramasi yaparken cagrilabilir.
         """
         if self.vision_model is not None:
-            print(" Vision Model hafızadan temizleniyor...")
+            print("Vision Model hafizadan temizleniyor...")
             del self.vision_model
             del self.vision_processor
             self.vision_model = None
             self.vision_processor = None
             gc.collect()
             torch.cuda.empty_cache()
-            print(" Hafıza Temizlendi.")
+            print("Hafiza Temizlendi.")

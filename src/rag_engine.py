@@ -12,10 +12,6 @@ from src.utils import load_prompts, load_config
 
 class RAGEngine:
     def refine_answer(self, draft_text, feedback_list, model, processor):
-        """
-        Guard'dan gelen hata raporunu ve YAML'daki promptu kullanarak
-        Qwen-VL'e metni yeniden ve hatasiz yazdirir.
-        """
         print("[Self-Correction] STE100 ihlalleri duzeltiliyor...")
         
         feedback_str = "\n".join(feedback_list)
@@ -70,7 +66,7 @@ class RAGEngine:
             formatted += f"{role}: {content}\n"
         return formatted
 
-    def search_and_answer(self, query, collection_name, history=None, user_image=None, use_ste100=False):
+    def search_and_answer(self, query, collection_name, history=None, use_ste100=False):
         if history is None:
             history = []
 
@@ -109,16 +105,30 @@ class RAGEngine:
             config_data = load_config()
             bm25_cache_path = config_data.get("vector_db", {}).get("bm25_cache_path", "data/bm25_cache.pkl")
             
+            cache_valid = False
+            
             if os.path.exists(bm25_cache_path):
-                print("BM25 Indeksi diskten (cache) yukleniyor...")
-                with open(bm25_cache_path, "rb") as f:
-                    cache = pickle.load(f)
-                bm25 = cache["bm25"]
-                ids = cache["ids"]
-                documents = cache["documents"]
-                metadatas = cache["metadatas"]
-            else:
-                print("[Uyari] BM25 Cache bulunamadi, anlik indeks olusturuluyor...")
+                print("BM25 Indeksi diskten okunuyor ve dogrulaniyor...")
+                try:
+                    with open(bm25_cache_path, "rb") as f:
+                        cache = pickle.load(f)
+                    
+                    current_ids = col.get(include=[])["ids"]
+                    
+                    if set(cache["ids"]) == set(current_ids):
+                        bm25 = cache["bm25"]
+                        ids = cache["ids"]
+                        documents = cache["documents"]
+                        metadatas = cache["metadatas"]
+                        cache_valid = True
+                        print("[Bilgi] Cache guncel ve basariyla yuklendi.")
+                    else:
+                        print("[Uyari] Veritabani degismis. Cache gecersiz sayildi.")
+                except Exception as e:
+                    print(f"[Uyari] Cache okuma hatasi: {e}")
+
+            if not cache_valid:
+                print("[Bilgi] Anlik BM25 indeksi olusturuluyor...")
                 all_docs_data = col.get() 
                 documents = all_docs_data["documents"]
                 ids = all_docs_data["ids"]
@@ -126,8 +136,23 @@ class RAGEngine:
                 
                 if not documents:
                     return "Veritabani bos.", ""
+                    
                 tokenized_corpus = [doc.lower().split(" ") for doc in documents]
                 bm25 = BM25Okapi(tokenized_corpus)
+                
+                try:
+                    new_cache = {
+                        "bm25": bm25,
+                        "ids": ids,
+                        "documents": documents,
+                        "metadatas": metadatas
+                    }
+                    os.makedirs(os.path.dirname(bm25_cache_path), exist_ok=True)
+                    with open(bm25_cache_path, "wb") as f:
+                        pickle.dump(new_cache, f)
+                    print("[Bilgi] Yeni BM25 cache diske kaydedildi.")
+                except Exception as e:
+                    print(f"[Uyari] Cache kaydetme hatasi: {e}")
 
             doc_scores = {}
             doc_meta_map = {} 
@@ -167,23 +192,30 @@ class RAGEngine:
             
             candidates_text = [doc_text_map[item[0]] for item in sorted_candidates]
             candidates_meta = [doc_meta_map[item[0]] for item in sorted_candidates]
-            pairs = [[query, txt] for txt in candidates_text]
+            
+            pairs = [[query, txt] for txt in candidates_text if txt and str(txt).strip()]
+            
+            if not pairs:
+                print("[Uyari] Reranker icin gecerli metin cifti olusturulamadi.")
+                return "Icerik analizine uygun metin bulunamadi.", ""
+                
             scores = reranker.predict(pairs)
+            
+            if scores is None or len(scores) == 0:
+                print("[Uyari] Reranker gecerli bir skor uretmedi.")
+                return "Arama sonuclari siralanamadi.", ""
+
             best_idx = np.argmax(scores)
             context_text = candidates_text[best_idx]
             best_meta = candidates_meta[best_idx]
 
-            if user_image is not None:
-                print("Kullanici Gorseli Yukleniyor (Veritabani gorseli ezildi)...")
-                input_image = user_image
-            else:
-                image_path = best_meta.get("image_path", "")
-                if image_path and os.path.exists(image_path):
-                    print(f"Gorsel Baglam Yukleniyor: {image_path}")
-                    try:
-                        input_image = Image.open(image_path)
-                    except Exception as e:
-                        print(f"Resim yukleme hatasi: {e}")
+            image_path = best_meta.get("image_path", "")
+            if image_path and os.path.exists(image_path):
+                print(f"Gorsel Baglam Yukleniyor: {image_path}")
+                try:
+                    input_image = Image.open(image_path)
+                except Exception as e:
+                    print(f"Resim yukleme hatasi: {e}")
 
         template = self.prompts.get("response_template", "Context: {context_text}\nQuestion: {query}")
         

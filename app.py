@@ -2,7 +2,6 @@ import streamlit as st
 import streamlit_authenticator as stauth
 import yaml
 from yaml.loader import SafeLoader
-from PIL import Image
 
 from src.rag_engine import RAGEngine
 from src.ste100_guard import STE100Guard
@@ -50,8 +49,6 @@ authenticator = load_auth()
 
 try:
     name, authentication_status, username = authenticator.login("main")
-except TypeError:
-    name, authentication_status, username = authenticator.login()
 except Exception as e:
     st.error(f"Kimlik dogrulama modulu baslatilamadi: {e}")
     name, authentication_status, username = None, None, None
@@ -76,13 +73,8 @@ if authentication_status:
             strict_mode = st.toggle("Siki Denetim (Otomatik Duzeltme)", value=False)
             
         st.info(f"Veri Seti: {COLLECTION_NAME}")
-
+        
         st.divider()
-        st.subheader("Gorsel Analiz")
-        uploaded_file = st.file_uploader(
-            "Sorguya gorsel ekleyin (Istege bagli)",
-            type=["png", "jpg", "jpeg"]
-        )
         
         if st.button("Sohbeti Temizle", type="primary"):
             st.session_state.messages = []
@@ -99,9 +91,6 @@ if authentication_status:
 
     for msg in st.session_state.messages:
         with st.chat_message(msg["role"]):
-            if "image" in msg:
-                st.image(msg["image"], caption="Uploaded Image", width=300)
-            
             st.markdown(msg["content"])
             
             if msg.get("is_report", False):
@@ -133,18 +122,10 @@ if authentication_status:
                     st.info(msg.get("context_text", "Context bulunamadi."))
 
     if prompt := st.chat_input("Teknik sorunuzu buraya yazin..."):
-        user_image = None
         msg_data = {"role": "user", "content": prompt}
-        
-        if uploaded_file is not None:
-            user_image = Image.open(uploaded_file)
-            msg_data["image"] = user_image
-            
         st.session_state.messages.append(msg_data)
         
         with st.chat_message("user"):
-            if user_image:
-                st.image(user_image, caption="Kullanici Gorseli", width=300)
             st.markdown(prompt)
 
         with st.chat_message("assistant"):
@@ -157,7 +138,6 @@ if authentication_status:
                     query=prompt, 
                     collection_name=COLLECTION_NAME,
                     history=st.session_state.messages,
-                    user_image=user_image,
                     use_ste100=ste100_mode
                 )
                 
