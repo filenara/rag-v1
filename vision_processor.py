@@ -1,4 +1,5 @@
 import logging
+import re
 import torch
 from typing import List
 from PIL import Image
@@ -70,7 +71,18 @@ class VisionProcessor:
                     for in_ids, out_ids in zip(inputs.input_ids, generated_ids)
                 ]
                 batch_captions = self.processor.batch_decode(trimmed_ids, skip_special_tokens=True)
-                all_captions.extend(batch_captions)
+                
+                # Regex ile <thinking> bloklarini temizleme ve <answer> cikarimi
+                cleaned_captions = []
+                for raw_text in batch_captions:
+                    final_text = re.sub(r"<thinking>.*?</thinking>", "", raw_text, flags=re.DOTALL).strip()
+                    answer_match = re.search(r"<answer>(.*?)</answer>", final_text, flags=re.DOTALL)
+                    if answer_match:
+                        cleaned_captions.append(answer_match.group(1).strip())
+                    else:
+                        cleaned_captions.append(final_text)
+                
+                all_captions.extend(cleaned_captions)
                 
             except Exception as e:
                 logger.error(f"Toplu vision islemi basarisiz: {e}")

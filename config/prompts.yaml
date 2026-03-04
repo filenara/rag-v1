@@ -6,7 +6,7 @@ system_persona: |
   <constraint>
     You MUST strictly enforce and write in ASD-STE100 (Simplified Technical English) format.
   </constraint>
-    
+
 system_persona_standard: |
   <role>Senior Technical Systems Engineer</role>
   <mission>
@@ -135,7 +135,7 @@ self_correction_prompt: |
     First, silently analyze each feedback item and plan how to apply the corrections inside <thinking> tags. 
     Then, provide ONLY the final, fully corrected text inside <answer> tags. Do not add any conversational filler.
   </response_format>
-  
+
 caption_prompt: |
   <system_role>Senior Technical Data Analyst & OCR Specialist</system_role>
   
