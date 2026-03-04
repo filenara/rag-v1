@@ -104,8 +104,14 @@ response_template: |
   </user_query>
 
   <response_format>
-    First, silently analyze the query and context inside <thinking> tags. 
-    Then, provide your final direct answer inside <answer> tags.
+    You MUST structure your final output EXACTLY using the following XML structure. Do not nest the tags.
+    
+    <thinking>
+    [Silently analyze the context, rules, or feedback here]
+    </thinking>
+    <answer>
+    [Write your final, direct response here]
+    </answer>
   </response_format>
 
 self_correction_prompt: |

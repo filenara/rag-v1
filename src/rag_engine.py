@@ -283,7 +283,7 @@ class RAGEngine:
         
         with self._inference_lock:
             with torch.no_grad():
-                generated_ids = model.generate(**inputs, max_new_tokens=512)
+                generated_ids = model.generate(**inputs, max_new_tokens=2048)
             
         response = processor.batch_decode(generated_ids, skip_special_tokens=True)[0]
         raw_text = (
