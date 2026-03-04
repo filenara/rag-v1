@@ -112,4 +112,7 @@ class LLMManager:
             del self.vision_processor
             self.vision_model = None
             self.vision_processor = None
+            gc.collect()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
             logger.info("Vision Model referanslari temizlendi.")

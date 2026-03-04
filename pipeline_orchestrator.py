@@ -15,6 +15,7 @@ from vector_indexer import VectorIndexer
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger(__name__)
 
+
 class CheckpointManager:
     def __init__(self, filepath: str = "ingest_checkpoint.json"):
         self.filepath = filepath
@@ -36,6 +37,7 @@ class CheckpointManager:
 
     def is_processed(self, filename: str) -> bool:
         return filename in self.processed
+
 
 class PipelineOrchestrator:
     def __init__(self):
@@ -70,41 +72,58 @@ class PipelineOrchestrator:
 
             batch_chunks = []
             batch_metadatas = []
+            pages_data = []
 
-            for page_num, page in enumerate(tqdm(doc, desc=f"Isleniyor: {filename}")):
+            # 1. Asama: Dokumani parse et ve verileri topla
+            for page_num, page in enumerate(tqdm(doc, desc=f"Okunuyor: {filename}")):
                 text = self.parser.extract_text(page)
                 page_dict = self.parser.extract_text_dict(page)
                 visual_assets = self.parser.extract_visuals(page, filename, page_num + 1)
                 
-                visual_summary = ""
-                has_visual = len(visual_assets) > 0
-                image_path = visual_assets[0].path if has_visual else ""
+                pages_data.append({
+                    "page_num": page_num + 1,
+                    "text": text,
+                    "page_dict": page_dict,
+                    "visual_assets": visual_assets,
+                    "visual_summary": "",
+                    "has_visual": len(visual_assets) > 0,
+                    "image_path": visual_assets[0].path if len(visual_assets) > 0 else ""
+                })
+                
+            doc.close()
 
-                if has_visual:
-                    safe_text = text[:2000] if text else "Metin bulunamadi."
+            # 2. Asama: Gorselleri toplu olarak VLM'den gecir
+            logger.info(f"Gorsel analizler yapiliyor: {filename}")
+            for data in tqdm(pages_data, desc="VLM Islemleri"):
+                if data["has_visual"]:
+                    safe_text = data["text"][:2000] if data["text"] else "Metin bulunamadi."
                     formatted_prompt = self.caption_prompt.replace("{page_text}", safe_text)
-                    pil_images = [asset.image for asset in visual_assets]
+                    pil_images = [asset.image for asset in data["visual_assets"]]
                     
                     captions = self.vision.generate_captions(pil_images, formatted_prompt)
                     
-                    visual_summary += "\n[VISUAL/TABLE DETECTED]:\n"
+                    summary = "\n[VISUAL/TABLE DETECTED]:\n"
                     for idx, caption in enumerate(captions):
-                        visual_summary += f"- Analysis {idx+1}: {caption}\n"
+                        summary += f"- Analysis {idx+1}: {caption}\n"
+                    data["visual_summary"] = summary
 
-                page_chunks = self.splitter.extract_semantic_chunks(page_dict)
+            # 3. Asama: Anlamsal bolme ve veritabanina yazma
+            logger.info(f"Metinler bolunuyor ve indeksleniyor: {filename}")
+            for data in pages_data:
+                page_chunks = self.splitter.extract_semantic_chunks(data["page_dict"])
 
                 for chunk_text in page_chunks:
-                    final_chunk = f"--- SOURCE: {filename} | PAGE {page_num + 1} ---\n"
-                    if has_visual:
-                        final_chunk += visual_summary
+                    final_chunk = f"--- SOURCE: {filename} | PAGE {data['page_num']} ---\n"
+                    if data["has_visual"]:
+                        final_chunk += data["visual_summary"]
                     final_chunk += f"{chunk_text}"
                     
                     batch_chunks.append(final_chunk)
                     batch_metadatas.append({
                         "source": filename, 
-                        "page": page_num + 1, 
-                        "has_visual": str(has_visual),
-                        "image_path": image_path 
+                        "page": data["page_num"], 
+                        "has_visual": str(data["has_visual"]),
+                        "image_path": data["image_path"] 
                     })
 
                 if len(batch_chunks) >= self.batch_size_limit:
@@ -112,7 +131,7 @@ class PipelineOrchestrator:
                     batch_chunks, batch_metadatas = [], []
                     self._clear_memory()
 
-            doc.close()
+            # Kalan parcalari kaydet
             if batch_chunks:
                 self.indexer.save_batch(batch_chunks, batch_metadatas)
             
@@ -126,6 +145,7 @@ class PipelineOrchestrator:
         gc.collect()
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
+
 
 if __name__ == "__main__":
     data_folder = "data"

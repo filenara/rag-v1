@@ -20,9 +20,6 @@ ingestion:
   chunk_overlap: 200
   batch_size: 32
 
-system:
-  use_mock_llm: false
-
 retrieval:
   n_results: 10
   k_constant: 60

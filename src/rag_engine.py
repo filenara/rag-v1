@@ -1,6 +1,7 @@
 import os
 import pickle
 import logging
+import threading
 import torch
 import numpy as np
 from typing import Tuple, List, Dict, Any, Optional
@@ -17,6 +18,8 @@ logger = logging.getLogger(__name__)
 
 
 class RAGEngine:
+    _inference_lock = threading.Lock()
+
     def __init__(self):
         logger.info("RAGEngine baslatiliyor (Conversation Aware + RRF Mode)...")
         self.db = DatabaseManager()
@@ -30,7 +33,6 @@ class RAGEngine:
         self.k_constant = self.retrieval_cfg.get("k_constant", 60)
         self.top_k_rerank = self.retrieval_cfg.get("top_k_rerank", 5)
 
-        # Statik tip hatasi giderildi
         self.bm25: Optional[BM25Okapi] = None
         self.ids: List[str] = []
         self.doc_text_map: Dict[str, str] = {}
@@ -66,7 +68,6 @@ class RAGEngine:
             logger.warning("BM25 cache dosyasi bulunamadi.")
 
     def reload_cache(self) -> None:
-        """Yeni dokumanlar eklendiginde sistemi yeniden baslatmadan cache'i gunceller."""
         self._load_bm25_cache()
 
     def refine_answer(
@@ -93,8 +94,9 @@ class RAGEngine:
             text=[text_input], padding=True, return_tensors="pt"
         ).to(model.device)
         
-        with torch.no_grad():
-            generated_ids = model.generate(**inputs, max_new_tokens=512)
+        with self._inference_lock:
+            with torch.no_grad():
+                generated_ids = model.generate(**inputs, max_new_tokens=512)
             
         response = processor.batch_decode(generated_ids, skip_special_tokens=True)[0]
         final_answer = (
@@ -173,27 +175,27 @@ class RAGEngine:
             col = self.db.get_collection(collection_name)
             
             doc_scores = {}
-            search_queries = [query]
             
-            for q in search_queries:
-                q_vec = embedder.encode([q], normalize_embeddings=True).tolist()
-                vec_res = col.query(query_embeddings=q_vec, n_results=self.n_results)
+            with self._inference_lock:
+                q_vec = embedder.encode([query], normalize_embeddings=True).tolist()
                 
-                if vec_res["ids"] and vec_res["ids"][0]:
-                    for rank, doc_id in enumerate(vec_res["ids"][0]):
-                        if doc_id not in doc_scores: 
-                            doc_scores[doc_id] = 0
-                        doc_scores[doc_id] += 1 / (self.k_constant + rank)
-                        
-                if self.bm25:
-                    bm25_scores = self.bm25.get_scores(q.lower().split(" "))
-                    top_bm25_indices = np.argsort(bm25_scores)[::-1][:self.n_results]
+            vec_res = col.query(query_embeddings=q_vec, n_results=self.n_results)
+            
+            if vec_res["ids"] and vec_res["ids"][0]:
+                for rank, doc_id in enumerate(vec_res["ids"][0]):
+                    if doc_id not in doc_scores: 
+                        doc_scores[doc_id] = 0
+                    doc_scores[doc_id] += 1 / (self.k_constant + rank)
                     
-                    for rank, idx in enumerate(top_bm25_indices):
-                        doc_id = self.ids[idx]
-                        if doc_id not in doc_scores: 
-                            doc_scores[doc_id] = 0
-                        doc_scores[doc_id] += 1 / (self.k_constant + rank)
+            if self.bm25:
+                bm25_scores = self.bm25.get_scores(query.lower().split(" "))
+                top_bm25_indices = np.argsort(bm25_scores)[::-1][:self.n_results]
+                
+                for rank, idx in enumerate(top_bm25_indices):
+                    doc_id = self.ids[idx]
+                    if doc_id not in doc_scores: 
+                        doc_scores[doc_id] = 0
+                    doc_scores[doc_id] += 1 / (self.k_constant + rank)
                     
             sorted_candidates = sorted(
                 doc_scores.items(), key=lambda item: item[1], reverse=True
@@ -215,7 +217,8 @@ class RAGEngine:
                 logger.warning("Reranker icin gecerli metin cifti olusturulamadi.")
                 return "Icerik analizine uygun metin bulunamadi.", "", True, False, []
                 
-            scores = reranker.predict(pairs)
+            with self._inference_lock:
+                scores = reranker.predict(pairs)
             
             if scores is None or len(scores) == 0:
                 logger.warning("Reranker gecerli bir skor uretmedi.")
@@ -271,8 +274,9 @@ class RAGEngine:
             return_tensors="pt"
         ).to(model.device)
         
-        with torch.no_grad():
-            generated_ids = model.generate(**inputs, max_new_tokens=512)
+        with self._inference_lock:
+            with torch.no_grad():
+                generated_ids = model.generate(**inputs, max_new_tokens=512)
             
         response = processor.batch_decode(generated_ids, skip_special_tokens=True)[0]
         final_text = (
