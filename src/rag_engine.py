@@ -1,4 +1,5 @@
 import os
+import re
 import pickle
 import logging
 import threading
@@ -99,9 +100,15 @@ class RAGEngine:
                 generated_ids = model.generate(**inputs, max_new_tokens=512)
             
         response = processor.batch_decode(generated_ids, skip_special_tokens=True)[0]
-        final_answer = (
+        raw_text = (
             response.split("assistant\n")[-1] if "assistant\n" in response else response
         )
+        
+        final_answer = re.sub(r"<thinking>.*?</thinking>", "", raw_text, flags=re.DOTALL).strip()
+        answer_match = re.search(r"<answer>(.*?)</answer>", final_answer, flags=re.DOTALL)
+        if answer_match:
+            final_answer = answer_match.group(1).strip()
+            
         return final_answer
 
     def _construct_system_prompt(self, use_ste100: bool = False) -> str:
@@ -279,9 +286,14 @@ class RAGEngine:
                 generated_ids = model.generate(**inputs, max_new_tokens=512)
             
         response = processor.batch_decode(generated_ids, skip_special_tokens=True)[0]
-        final_text = (
+        raw_text = (
             response.split("assistant\n")[-1] if "assistant\n" in response else response
         )
+
+        final_text = re.sub(r"<thinking>.*?</thinking>", "", raw_text, flags=re.DOTALL).strip()
+        answer_match = re.search(r"<answer>(.*?)</answer>", final_text, flags=re.DOTALL)
+        if answer_match:
+            final_text = answer_match.group(1).strip()
 
         is_compliant = True
         was_corrected = False
