@@ -44,7 +44,7 @@ class VisionProcessor:
             prompt_batch = prompts[b_idx:b_idx+batch_size]
             
             messages_list = [
-                {"role": "user", "content": [{"type": "image", "image": img}, {"type": "text", "text": txt}]}
+                [{"role": "user", "content": [{"type": "image", "image": img}, {"type": "text", "text": txt}]}]
                 for img, txt in zip(img_batch, prompt_batch)
             ]
 
