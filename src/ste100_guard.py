@@ -6,7 +6,7 @@ class STE100Guard:
     def __init__(self, json_path="config/ste100_rules.json"):
         """
         STE100 denetleyicisini baslatir. 
-        Varsayilan olarak v9 kural seti kullanilir.
+        Varsayilan olarak belirlenen kural seti kullanilir.
         """
         self.rules = self._load_json_rules(json_path)
 
@@ -25,7 +25,8 @@ class STE100Guard:
     def analyze_and_report(self, text):
         """
         Metni tarar ve metinde gecen yasakli kelimeler icin 
-        modelin anlayabilecegi dinamik bir rapor hazirlar.
+        modelin anlayabilecegi, orneklerle zenginlestirilmis 
+        dinamik bir rapor hazirlar.
         """
         feedback_report = []
         
@@ -34,19 +35,33 @@ class STE100Guard:
                 keyword = rule.get("keyword", "")
                 part_of_speech = rule.get("part_of_speech", "")
                 
-                # Kelimenin tam eslesmesi icin regex kullanimi
                 pattern = re.compile(r'\b' + re.escape(keyword) + r'\b', re.IGNORECASE)
                 
                 if pattern.search(text):
                     alts = ", ".join(rule.get("approved_alternatives", []))
                     desc = rule.get("rule_description", "")
+                    examples = rule.get("examples", [])
                     
                     report_item = f"- SUPHELI KELIME: '{keyword}'\n"
                     report_item += f"  > Kural: Bu kelimenin ({part_of_speech}) olarak kullanimi YASAKTIR.\n"
+                    
                     if alts:
                         report_item += f"  > Aksiyon: Eger metinde {part_of_speech} olarak kullandiysan, sunlarla degistir: {alts}.\n"
+                    
                     if desc:
                         report_item += f"  > Not: {desc}\n"
+                        
+                    if examples and isinstance(examples, list):
+                        first_example = examples[0]
+                        ste_example = first_example.get("ste", "")
+                        non_ste_example = first_example.get("non_ste", "")
+                        
+                        if ste_example or non_ste_example:
+                            report_item += "  > Ornekler:\n"
+                            if non_ste_example:
+                                report_item += f"    * Hatali (NON-STE): {non_ste_example}\n"
+                            if ste_example:
+                                report_item += f"    * Dogru (STE): {ste_example}\n"
                         
                     feedback_report.append(report_item)
                     
