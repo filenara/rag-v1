@@ -1,17 +1,36 @@
 import logging
 import threading
-from typing import Any, Tuple, Optional
-import torch
-from transformers import (
-    Qwen2_5_VLForConditionalGeneration,
-    AutoProcessor,
-    BitsAndBytesConfig
-)
-from sentence_transformers import SentenceTransformer, CrossEncoder
+from typing import Any, Optional
+import aiohttp
 
+from sentence_transformers import SentenceTransformer, CrossEncoder
 from src.utils import load_config
 
 logger = logging.getLogger(__name__)
+
+
+class VisionAPIClient:
+    def __init__(self, base_url: str, model_name: str):
+        self.base_url = base_url.rstrip("/")
+        self.model_name = model_name
+
+    async def generate_async(self, messages: list, max_tokens: int = 2048) -> str:
+        payload = {
+            "model": self.model_name,
+            "messages": messages,
+            "max_tokens": max_tokens,
+            "temperature": 0.0
+        }
+        
+        async with aiohttp.ClientSession() as session:
+            endpoint = f"{self.base_url}/v1/chat/completions"
+            async with session.post(endpoint, json=payload) as response:
+                if response.status == 200:
+                    data = await response.json()
+                    return data["choices"][0]["message"]["content"]
+                
+                error_text = await response.text()
+                raise RuntimeError(f"API Iletisim Hatasi ({response.status}): {error_text}")
 
 
 class LLMManager:
@@ -35,9 +54,10 @@ class LLMManager:
             raise KeyError(error_msg)
         
         self.device = self.model_cfg.get("device", "cpu")
+        self.api_base_url = self.model_cfg.get("api_base_url", "http://127.0.0.1:8000")
+        self.vision_model_name = self.model_cfg.get("vision_model_name", "Qwen/Qwen2.5-VL-7B-Instruct")
         
         try:
-            self.vision_model_path = self.model_cfg["vision_model"]
             self.embedding_model_path = self.model_cfg["embedding_model"]
             self.rerank_model_path = self.model_cfg["reranker_model"]
         except KeyError as e:
@@ -45,47 +65,20 @@ class LLMManager:
             logger.error(error_msg)
             raise KeyError(error_msg)
         
-        self.vision_model: Optional[Any] = None
-        self.vision_processor: Optional[Any] = None
+        self.vision_client: Optional[VisionAPIClient] = None
         self.embedder: Optional[Any] = None
         self.reranker: Optional[Any] = None
         
         logger.info(f"LLM Manager baslatildi. (Cihaz: {self.device})")
 
-    def load_vision_model(self) -> Tuple[Any, Any]:
-        if self.vision_model is None:
-            logger.info(
-                f"Yukleniyor: {self.vision_model_path} (4-Bit Quantized)"
+    def get_vision_client(self) -> VisionAPIClient:
+        if self.vision_client is None:
+            self.vision_client = VisionAPIClient(
+                base_url=self.api_base_url,
+                model_name=self.vision_model_name
             )
-            try:
-                bnb_config = BitsAndBytesConfig(
-                    load_in_4bit=True,
-                    bnb_4bit_use_double_quant=True,
-                    bnb_4bit_quant_type="nf4",
-                    bnb_4bit_compute_dtype=torch.float16
-                )
-
-                self.vision_model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
-                    self.vision_model_path,
-                    device_map={"": self.device},
-                    quantization_config=bnb_config,
-                    trust_remote_code=True
-                )
-                
-                self.vision_processor = AutoProcessor.from_pretrained(
-                    self.vision_model_path,
-                    trust_remote_code=True,
-                    min_pixels=256 * 28 * 28,
-                    max_pixels=1280 * 28 * 28
-                )
-                logger.info("Vision Model hazir (Optimize edildi).")
-            except Exception as e:
-                logger.error(f"Vision Model yukleme hatasi: {e}")
-                raise e
-        else:
-            logger.debug("Vision Model zaten hafizada, tekrar yuklenmiyor.")
-            
-        return self.vision_model, self.vision_processor
+            logger.info(f"Vision API Istemcisi hazir. (URL: {self.api_base_url})")
+        return self.vision_client
         
     def load_embedder(self) -> Any:
         if self.embedder is None:
@@ -104,15 +97,3 @@ class LLMManager:
             )
             logger.info("Reranker Model hazir.")
         return self.reranker
-
-    def unload_vision_model(self) -> None:
-        if self.vision_model is not None:
-            logger.info("Vision Model nesneleri referanslardan siliniyor...")
-            del self.vision_model
-            del self.vision_processor
-            self.vision_model = None
-            self.vision_processor = None
-            gc.collect()
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
-            logger.info("Vision Model referanslari temizlendi.")

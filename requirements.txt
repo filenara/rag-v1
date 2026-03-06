@@ -17,3 +17,4 @@ qwen-vl-utils
 bcrypt
 Pillow
 tqdm
+aiohttp

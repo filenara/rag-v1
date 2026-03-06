@@ -1,14 +1,14 @@
 import os
 import re
+import io
+import base64
 import pickle
 import logging
-import threading
-import torch
+import asyncio
 import numpy as np
 from typing import Tuple, List, Dict, Any, Optional
 from PIL import Image
 from rank_bm25 import BM25Okapi
-from qwen_vl_utils import process_vision_info
 
 from src.database import DatabaseManager
 from src.llm_manager import LLMManager
@@ -19,10 +19,8 @@ logger = logging.getLogger(__name__)
 
 
 class RAGEngine:
-    _inference_lock = threading.Lock()
-
     def __init__(self):
-        logger.info("RAGEngine baslatiliyor (Conversation Aware + RRF Mode)...")
+        logger.info("RAGEngine baslatiliyor (Asynchronous API Mode)...")
         self.db = DatabaseManager()
         self.llm_manager = LLMManager()
         self.guard = STE100Guard()
@@ -71,10 +69,16 @@ class RAGEngine:
     def reload_cache(self) -> None:
         self._load_bm25_cache()
 
+    def _image_to_base64(self, image: Image.Image) -> str:
+        buffered = io.BytesIO()
+        image.save(buffered, format="PNG")
+        img_str = base64.b64encode(buffered.getvalue()).decode("utf-8")
+        return f"data:image/png;base64,{img_str}"
+
     def refine_answer(
-        self, draft_text: str, feedback_list: list, model: Any, processor: Any
+        self, draft_text: str, feedback_list: list, vision_client: Any
     ) -> str:
-        logger.info("[Self-Correction] STE100 ihlalleri duzeltiliyor...")
+        logger.info("[Self-Correction] STE100 ihlalleri API uzerinden duzeltiliyor...")
         
         feedback_str = "\n".join(feedback_list)
         template = self.prompts.get(
@@ -88,22 +92,13 @@ class RAGEngine:
         )
         
         messages = [{"role": "user", "content": [{"type": "text", "text": prompt_text}]}]
-        text_input = processor.apply_chat_template(
-            messages, tokenize=False, add_generation_prompt=True
-        )
-        inputs = processor(
-            text=[text_input], padding=True, return_tensors="pt"
-        ).to(model.device)
         
-        with self._inference_lock:
-            with torch.no_grad():
-                generated_ids = model.generate(**inputs, max_new_tokens=512)
+        try:
+            raw_text = asyncio.run(vision_client.generate_async(messages, max_tokens=512))
+        except Exception as e:
+            logger.error(f"Duzeltme sirasinda API hatasi: {e}")
+            return draft_text
             
-        response = processor.batch_decode(generated_ids, skip_special_tokens=True)[0]
-        raw_text = (
-            response.split("assistant\n")[-1] if "assistant\n" in response else response
-        )
-        
         final_answer = re.sub(r"<thinking>.*?</thinking>", "", raw_text, flags=re.DOTALL).strip()
         answer_match = re.search(r"<answer>(.*?)</answer>", final_answer, flags=re.DOTALL)
         if answer_match:
@@ -150,7 +145,7 @@ class RAGEngine:
 
         embedder = self.llm_manager.load_embedder()
         reranker = self.llm_manager.load_reranker()
-        model, processor = self.llm_manager.load_vision_model()
+        vision_client = self.llm_manager.get_vision_client()
         
         is_feedback = self._is_feedback_intent(query)
         intent_instruction = "Answer based on the context and previous conversation."
@@ -183,8 +178,7 @@ class RAGEngine:
             
             doc_scores = {}
             
-            with self._inference_lock:
-                q_vec = embedder.encode([query], normalize_embeddings=True).tolist()
+            q_vec = embedder.encode([query], normalize_embeddings=True).tolist()
                 
             vec_res = col.query(query_embeddings=q_vec, n_results=self.n_results)
             
@@ -224,8 +218,7 @@ class RAGEngine:
                 logger.warning("Reranker icin gecerli metin cifti olusturulamadi.")
                 return "Icerik analizine uygun metin bulunamadi.", "", True, False, []
                 
-            with self._inference_lock:
-                scores = reranker.predict(pairs)
+            scores = reranker.predict(pairs)
             
             if scores is None or len(scores) == 0:
                 logger.warning("Reranker gecerli bir skor uretmedi.")
@@ -256,7 +249,8 @@ class RAGEngine:
 
         user_content = []
         if input_image:
-            user_content.append({"type": "image", "image": input_image})
+            b64_image = self._image_to_base64(input_image)
+            user_content.append({"type": "image_url", "image_url": {"url": b64_image}})
             user_prompt_text = "[IMAGE ATTACHED TO THIS MESSAGE]\n" + user_prompt_text
             
         user_content.append({"type": "text", "text": user_prompt_text})
@@ -268,27 +262,11 @@ class RAGEngine:
             {"role": "user", "content": user_content}
         ]
         
-        text_input = processor.apply_chat_template(
-            messages, tokenize=False, add_generation_prompt=True
-        )
-        image_inputs, video_inputs = process_vision_info(messages)
-        
-        inputs = processor(
-            text=[text_input],
-            images=image_inputs,
-            videos=video_inputs,
-            padding=True,
-            return_tensors="pt"
-        ).to(model.device)
-        
-        with self._inference_lock:
-            with torch.no_grad():
-                generated_ids = model.generate(**inputs, max_new_tokens=2048)
-            
-        response = processor.batch_decode(generated_ids, skip_special_tokens=True)[0]
-        raw_text = (
-            response.split("assistant\n")[-1] if "assistant\n" in response else response
-        )
+        try:
+            raw_text = asyncio.run(vision_client.generate_async(messages, max_tokens=2048))
+        except Exception as e:
+            logger.error(f"API cagirilirken hata: {e}")
+            raw_text = "Cevap uretilirken API sunucusunda bir hata olustu."
 
         final_text = re.sub(r"<thinking>.*?</thinking>", "", raw_text, flags=re.DOTALL).strip()
         answer_match = re.search(r"<answer>(.*?)</answer>", final_text, flags=re.DOTALL)
@@ -314,7 +292,7 @@ class RAGEngine:
                     
                     previous_text = current_text
                     current_text = self.refine_answer(
-                        current_text, feedback_report, model, processor
+                        current_text, feedback_report, vision_client
                     )
                     
                     if current_text.strip() == previous_text.strip():
