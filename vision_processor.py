@@ -1,11 +1,10 @@
-%%writefile vision_processor.py
 import logging
 import re
 import torch
 from typing import List
 from PIL import Image
 from qwen_vl_utils import process_vision_info
-from transformers import AutoProcessor, Qwen2_5_VLForConditionalGeneration
+from src.llm_manager import LLMManager
 from src.utils import load_config
 
 logger = logging.getLogger(__name__)
@@ -13,20 +12,11 @@ logger = logging.getLogger(__name__)
 class VisionProcessor:
     def __init__(self, max_tokens: int = 512):
         self.max_tokens = max_tokens
+        self.llm_manager = LLMManager()
+        self.model, self.processor = self.llm_manager.load_vision_model()
+        
         self.config = load_config()
         self.batch_size = self.config.get("models", {}).get("vision_batch_size", 2)
-        
-        vision_model_path = self.config.get("models", {}).get("vision_model", "Qwen/Qwen2.5-VL-7B-Instruct")
-        device_map = self.config.get("models", {}).get("device", "cuda")
-        
-        logger.info(f"Vision modeli yukleniyor: {vision_model_path}")
-        
-        self.processor = AutoProcessor.from_pretrained(vision_model_path)
-        self.model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
-            vision_model_path,
-            torch_dtype=torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16,
-            device_map=device_map
-        )
 
     def generate_captions(self, images: List[Image.Image], prompt_text: str) -> List[str]:
         if not images:
