@@ -1,10 +1,12 @@
 import logging
 import threading
-from typing import Any, Optional
+from typing import Any, Optional, Tuple
 import requests
+import torch
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 
 from sentence_transformers import SentenceTransformer, CrossEncoder
+from transformers import AutoProcessor, Qwen2_5_VLForConditionalGeneration
 from src.utils import load_config
 
 logger = logging.getLogger(__name__)
@@ -73,11 +75,13 @@ class LLMManager:
         
         self.device = self.model_cfg.get("device", "cpu")
         self.api_base_url = self.model_cfg.get("api_base_url", "http://127.0.0.1:8000")
-        self.vision_model_name = self.model_cfg.get("vision_model_name", "Qwen/Qwen2.5-VL-7B-Instruct")
+        
+        self.vision_api_model_name = self.model_cfg.get("vision_model_name", "Qwen/Qwen2.5-VL-7B-Instruct")
         
         try:
             self.embedding_model_path = self.model_cfg["embedding_model"]
             self.rerank_model_path = self.model_cfg["reranker_model"]
+            self.vision_model_path = self.model_cfg.get("vision_model", "./local_models/Qwen2.5-VL-7B-Instruct")
         except KeyError as e:
             error_msg = f"Ayar dosyasinda zorunlu model yolu eksik: {e}"
             logger.error(error_msg)
@@ -87,16 +91,36 @@ class LLMManager:
         self.embedder: Optional[Any] = None
         self.reranker: Optional[Any] = None
         
+        self.vision_local_model: Optional[Any] = None
+        self.vision_processor: Optional[Any] = None
+        
         logger.info(f"LLM Manager baslatildi. (Cihaz: {self.device})")
 
     def get_vision_client(self) -> VisionAPIClient:
         if self.vision_client is None:
             self.vision_client = VisionAPIClient(
                 base_url=self.api_base_url,
-                model_name=self.vision_model_name
+                model_name=self.vision_api_model_name
             )
             logger.info(f"Vision API Istemcisi hazir. (URL: {self.api_base_url})")
         return self.vision_client
+
+    def load_vision_model(self) -> Tuple[Any, Any]:
+        if self.vision_local_model is None or self.vision_processor is None:
+            logger.info(f"Yerel Vision modeli yukleniyor: {self.vision_model_path}")
+            
+            self.vision_processor = AutoProcessor.from_pretrained(self.vision_model_path)
+            
+            dtype = torch.bfloat16 if torch.cuda.is_available() and torch.cuda.is_bf16_supported() else torch.float16
+            
+            self.vision_local_model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
+                self.vision_model_path,
+                torch_dtype=dtype,
+                device_map=self.device
+            )
+            logger.info("Yerel Vision modeli ve islemcisi hazir.")
+            
+        return self.vision_local_model, self.vision_processor
         
     def load_embedder(self) -> Any:
         if self.embedder is None:
