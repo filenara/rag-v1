@@ -1,10 +1,12 @@
 import os
 import gc
 import json
+import hashlib
 import logging
 import torch
 from tqdm import tqdm
-from typing import List, Set
+from typing import List, Set, Dict
+from PIL import Image
 
 from src.utils import load_prompts, load_config
 from document_parser import DocumentParser
@@ -16,8 +18,41 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(me
 logger = logging.getLogger(__name__)
 
 
+def get_image_hash(image: Image.Image) -> str:
+    return hashlib.md5(image.tobytes()).hexdigest()
+
+
+class VisionCacheManager:
+    def __init__(self, filepath: str = "data/vision_cache.json"):
+        self.filepath = filepath
+        self.cache: Dict[str, str] = self._load()
+
+    def _load(self) -> Dict[str, str]:
+        if os.path.exists(self.filepath):
+            try:
+                with open(self.filepath, 'r', encoding='utf-8') as f:
+                    return json.load(f)
+            except Exception as e:
+                logger.warning(f"Cache okuma hatasi: {e}")
+                return {}
+        return {}
+
+    def save(self) -> None:
+        try:
+            with open(self.filepath, 'w', encoding='utf-8') as f:
+                json.dump(self.cache, f, ensure_ascii=False, indent=4)
+        except Exception as e:
+            logger.error(f"Cache kaydetme hatasi: {e}")
+
+    def get(self, img_hash: str) -> str:
+        return self.cache.get(img_hash, "")
+
+    def set(self, img_hash: str, caption: str) -> None:
+        self.cache[img_hash] = caption
+
+
 class CheckpointManager:
-    def __init__(self, filepath: str = "ingest_checkpoint.json"):
+    def __init__(self, filepath: str = "data/ingest_checkpoint.json"):
         self.filepath = filepath
         self.processed: Set[str] = self._load()
 
@@ -30,10 +65,13 @@ class CheckpointManager:
                 return set()
         return set()
 
-    def mark_as_done(self, filename: str):
+    def mark_as_done(self, filename: str) -> None:
         self.processed.add(filename)
-        with open(self.filepath, 'w', encoding='utf-8') as f:
-            json.dump(list(self.processed), f)
+        try:
+            with open(self.filepath, 'w', encoding='utf-8') as f:
+                json.dump(list(self.processed), f)
+        except Exception as e:
+            logger.error(f"Checkpoint kaydetme hatasi: {e}")
 
     def is_processed(self, filename: str) -> bool:
         return filename in self.processed
@@ -42,21 +80,22 @@ class CheckpointManager:
 class PipelineOrchestrator:
     def __init__(self):
         self.cfg = load_config()
-        self.collection_name = self.cfg.get("vector_db", {}).get("collection_name", "doc_v2_asset_store")
+        self.collection_name = self.cfg.get("vector_db", {}).get("collection_name", "doc_store")
         self.bm25_path = self.cfg.get("vector_db", {}).get("bm25_cache_path", "data/bm25_cache.pkl")
         self.assets_dir = os.path.join("data", "assets")
-        self.batch_size_limit = 32
+        self.batch_size_limit = self.cfg.get("ingestion", {}).get("batch_size", 32)
 
         self.prompts = load_prompts()
         self.caption_prompt = self.prompts.get("caption_prompt", "Describe this technical image accurately.")
 
         self.checkpoint = CheckpointManager()
+        self.vision_cache = VisionCacheManager()
         self.parser = DocumentParser(assets_dir=self.assets_dir)
         self.vision = VisionProcessor()
         self.splitter = STE100SemanticSplitter()
         self.indexer = VectorIndexer(self.collection_name, self.bm25_path)
 
-    def run_pipeline(self, pdf_paths: List[str]):
+    def run_pipeline(self, pdf_paths: List[str]) -> None:
         logger.info(f"Ingestion baslatiliyor. Koleksiyon: {self.collection_name}")
         
         for pdf_path in pdf_paths:
@@ -67,14 +106,13 @@ class PipelineOrchestrator:
             try:
                 doc = self.parser.open_document(pdf_path)
             except Exception as e:
-                logger.error(f"Dosya acilamadi {filename}: {e}")
+                logger.error(f"Dosya acilamadi {filename}: {e}", exc_info=True)
                 continue
 
             batch_chunks = []
             batch_metadatas = []
             pages_data = []
 
-            # 1. Asama: Dokumani parse et ve verileri topla
             for page_num, page in enumerate(tqdm(doc, desc=f"Okunuyor: {filename}")):
                 text = self.parser.extract_text(page)
                 page_dict = self.parser.extract_text_dict(page)
@@ -92,22 +130,38 @@ class PipelineOrchestrator:
                 
             doc.close()
 
-            # 2. Asama: Gorselleri toplu olarak VLM'den gecir
             logger.info(f"Gorsel analizler yapiliyor: {filename}")
             for data in tqdm(pages_data, desc="VLM Islemleri"):
                 if data["has_visual"]:
                     safe_text = data["text"][:2000] if data["text"] else "Metin bulunamadi."
                     formatted_prompt = self.caption_prompt.replace("{page_text}", safe_text)
-                    pil_images = [asset.image for asset in data["visual_assets"]]
                     
-                    captions = self.vision.generate_captions(pil_images, formatted_prompt)
+                    final_captions = []
+                    images_to_process = []
+                    hashes_to_process = []
                     
+                    for asset in data["visual_assets"]:
+                        img_hash = get_image_hash(asset.image)
+                        cached_caption = self.vision_cache.get(img_hash)
+                        
+                        if cached_caption:
+                            final_captions.append(cached_caption)
+                        else:
+                            images_to_process.append(asset.image)
+                            hashes_to_process.append(img_hash)
+                    
+                    if images_to_process:
+                        new_captions = self.vision.generate_captions(images_to_process, formatted_prompt)
+                        for h, cap in zip(hashes_to_process, new_captions):
+                            self.vision_cache.set(h, cap)
+                            final_captions.append(cap)
+                        self.vision_cache.save()
+                        
                     summary = "\n[VISUAL/TABLE DETECTED]:\n"
-                    for idx, caption in enumerate(captions):
+                    for idx, caption in enumerate(final_captions):
                         summary += f"- Analysis {idx+1}: {caption}\n"
                     data["visual_summary"] = summary
 
-            # 3. Asama: Anlamsal bolme ve veritabanina yazma
             logger.info(f"Metinler bolunuyor ve indeksleniyor: {filename}")
             for data in pages_data:
                 page_chunks = self.splitter.extract_semantic_chunks(data["page_dict"])
@@ -131,7 +185,6 @@ class PipelineOrchestrator:
                     batch_chunks, batch_metadatas = [], []
                     self._clear_memory()
 
-            # Kalan parcalari kaydet
             if batch_chunks:
                 self.indexer.save_batch(batch_chunks, batch_metadatas)
             
@@ -141,7 +194,7 @@ class PipelineOrchestrator:
         self.indexer.build_and_save_bm25()
         logger.info("Tum islemler tamamlandi.")
 
-    def _clear_memory(self):
+    def _clear_memory(self) -> None:
         gc.collect()
         if torch.cuda.is_available():
             torch.cuda.empty_cache()

@@ -1,37 +1,31 @@
 import chromadb
 import os
+import logging
 from src.utils import load_config
+
+logger = logging.getLogger(__name__)
 
 class DatabaseManager:
     def __init__(self):
-        # Ayarları yükle
         self.cfg = load_config()
         
-        # Veritabanı yolu
-        persist_path = self.cfg['vector_db']['persist_path']
+        persist_path = self.cfg.get('vector_db', {}).get('persist_path', 'data/chroma_db')
         
-        # Klasör yoksa oluştur
         if not os.path.exists(persist_path):
             os.makedirs(persist_path)
             
         self.client = chromadb.PersistentClient(path=persist_path)
 
     def list_collections(self):
-        """Sistemdeki tüm döküman setlerini listeler."""
         try:
             cols = self.client.list_collections()
             return [c.name for c in cols]
         except Exception as e:
-            print(f"DB Hatası: {e}")
+            logger.error(f"DB Hatasi (list_collections): {e}", exc_info=True)
             return []
 
     def get_collection(self, name):
-        """
-        Belirli bir döküman koleksiyonunu getirir veya oluşturur.
-        Mesafe metriği artık ayarlardan dinamik olarak okunuyor.
-        """
-        # Varsayılan olarak 'cosine' kullanır, ayar yoksa hata vermez.
-        metric = self.cfg['vector_db'].get('distance_metric', 'cosine')
+        metric = self.cfg.get('vector_db', {}).get('distance_metric', 'cosine')
         
         return self.client.get_or_create_collection(
             name=name,
@@ -39,9 +33,9 @@ class DatabaseManager:
         )
     
     def delete_collection(self, name):
-        """Koleksiyonu siler (Admin/Yönetici işlemleri için)."""
         try:
             self.client.delete_collection(name)
             return True
-        except:
+        except Exception as e:
+            logger.error(f"Koleksiyon silinirken hata olustu ({name}): {e}", exc_info=True)
             return False

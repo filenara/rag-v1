@@ -18,3 +18,5 @@ bcrypt
 Pillow
 tqdm
 aiohttp
+tenacity
+spacy

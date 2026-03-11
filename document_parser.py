@@ -1,10 +1,14 @@
 import io
 import os
-import uuid
-from typing import List, Optional
+import hashlib
+import logging
+from typing import List
 import fitz
 from PIL import Image
 from pydantic import BaseModel
+
+logger = logging.getLogger(__name__)
+
 
 class VisualAsset(BaseModel):
     image: Image.Image
@@ -12,6 +16,7 @@ class VisualAsset(BaseModel):
 
     class Config:
         arbitrary_types_allowed = True
+
 
 class DocumentParser:
     def __init__(self, assets_dir: str, min_width: int = 80, min_height: int = 80):
@@ -66,13 +71,25 @@ class DocumentParser:
                 img_data = pix.tobytes("png")
                 pil_img = Image.open(io.BytesIO(img_data))
                 
-                safe_filename = os.path.splitext(filename)[0].replace(" ", "_")
-                asset_name = f"{safe_filename}_p{page_num}_{uuid.uuid4().hex[:6]}.png"
+                img_hash = hashlib.md5(pil_img.tobytes()).hexdigest()
+                asset_name = f"vis_{img_hash}.png"
                 save_path = os.path.join(self.assets_dir, asset_name)
-                pix.save(save_path)
+                
+                if not os.path.exists(save_path):
+                    pix.save(save_path)
                 
                 assets.append(VisualAsset(image=pil_img, path=save_path))
-            except Exception:
+            except OSError as e:
+                logger.warning(
+                    f"Gorsel diske kaydedilemedi (Sayfa: {page_num}): {e}", 
+                    exc_info=True
+                )
+                continue
+            except Exception as e:
+                logger.warning(
+                    f"Gorsel cikarimi sirasinda beklenmeyen hata (Sayfa: {page_num}): {e}", 
+                    exc_info=True
+                )
                 continue
                 
         return assets

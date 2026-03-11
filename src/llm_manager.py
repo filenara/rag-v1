@@ -1,7 +1,8 @@
 import logging
 import threading
 from typing import Any, Optional
-import aiohttp
+import requests
+from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 
 from sentence_transformers import SentenceTransformer, CrossEncoder
 from src.utils import load_config
@@ -14,7 +15,13 @@ class VisionAPIClient:
         self.base_url = base_url.rstrip("/")
         self.model_name = model_name
 
-    async def generate_async(self, messages: list, max_tokens: int = 2048) -> str:
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, min=2, max=10),
+        retry=retry_if_exception_type(requests.exceptions.RequestException),
+        reraise=True
+    )
+    def generate(self, messages: list, max_tokens: int = 2048) -> str:
         payload = {
             "model": self.model_name,
             "messages": messages,
@@ -22,15 +29,26 @@ class VisionAPIClient:
             "temperature": 0.0
         }
         
-        async with aiohttp.ClientSession() as session:
-            endpoint = f"{self.base_url}/v1/chat/completions"
-            async with session.post(endpoint, json=payload) as response:
-                if response.status == 200:
-                    data = await response.json()
-                    return data["choices"][0]["message"]["content"]
+        endpoint = f"{self.base_url}/v1/chat/completions"
+        
+        try:
+            response = requests.post(endpoint, json=payload, timeout=120)
+            
+            if response.status_code == 200:
+                data = response.json()
+                return data["choices"][0]["message"]["content"]
+            
+            error_text = response.text
+            
+            if response.status_code >= 500 or response.status_code == 429:
+                logger.warning(f"Sunucu hatasi alindi ({response.status_code}), tekrar deneniyor...")
+                response.raise_for_status()
                 
-                error_text = await response.text()
-                raise RuntimeError(f"API Iletisim Hatasi ({response.status}): {error_text}")
+            raise RuntimeError(f"API Iletisim Hatasi ({response.status_code}): {error_text}")
+            
+        except requests.exceptions.RequestException as e:
+            logger.warning(f"API baglanti sorunu, tekrar deneniyor... Hata: {e}")
+            raise
 
 
 class LLMManager:

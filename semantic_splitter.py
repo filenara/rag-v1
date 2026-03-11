@@ -1,43 +1,73 @@
+import re
+import numpy as np
 from typing import List
 
+from src.llm_manager import LLMManager
+
+
 class STE100SemanticSplitter:
-    def __init__(self, normal_text_size_limit: float = 11.0):
-        self.normal_text_size_limit = normal_text_size_limit
+    def __init__(self, similarity_threshold: float = 0.45, max_chunk_length: int = 1500):
+        self.similarity_threshold = similarity_threshold
+        self.max_chunk_length = max_chunk_length
+        self.llm_manager = LLMManager()
+        self.embedder = self.llm_manager.load_embedder()
+
+    def _extract_text_from_dict(self, page_dict: dict) -> str:
+        text_content = ""
+        blocks = page_dict.get("blocks", [])
+        
+        for block in blocks:
+            if block.get("type") == 0:
+                for line in block.get("lines", []):
+                    for span in line.get("spans", []):
+                        text_content += span.get("text", "").strip() + " "
+                text_content += "\n"
+                
+        return text_content.strip()
+
+    def _cosine_similarity(self, vec1: np.ndarray, vec2: np.ndarray) -> float:
+        dot_product = np.dot(vec1, vec2)
+        norm1 = np.linalg.norm(vec1)
+        norm2 = np.linalg.norm(vec2)
+        
+        if norm1 == 0 or norm2 == 0:
+            return 0.0
+            
+        return dot_product / (norm1 * norm2)
 
     def extract_semantic_chunks(self, page_dict: dict) -> List[str]:
+        raw_text = self._extract_text_from_dict(page_dict)
+        if not raw_text:
+            return []
+
+        sentences = re.split(r'(?<=[.!?]) +', raw_text)
+        sentences = [s.strip() for s in sentences if len(s.strip()) > 5]
+
+        if not sentences:
+            return []
+            
+        if len(sentences) == 1:
+            return sentences
+
+        embeddings = self.embedder.encode(sentences)
+
         semantic_chunks = []
-        current_heading = "Genel Baglam"
-        current_content = ""
+        current_chunk = sentences[0]
 
-        blocks = page_dict.get("blocks", [])
+        for i in range(1, len(sentences)):
+            sentence = sentences[i]
+            sim_score = self._cosine_similarity(embeddings[i-1], embeddings[i])
 
-        for b in blocks:
-            if b.get("type") == 0:
-                for line in b.get("lines", []):
-                    for span in line.get("spans", []):
-                        text = span.get("text", "").strip()
-                        if not text:
-                            continue
-                        
-                        font_size = span.get("size", 0)
-                        font_name = span.get("font", "").lower()
+            is_semantic_shift = sim_score < self.similarity_threshold
+            is_length_exceeded = len(current_chunk) + len(sentence) > self.max_chunk_length
 
-                        is_heading = font_size > self.normal_text_size_limit or "bold" in font_name
+            if is_semantic_shift or is_length_exceeded:
+                semantic_chunks.append(current_chunk.strip())
+                current_chunk = sentence
+            else:
+                current_chunk += " " + sentence
 
-                        if is_heading:
-                            if current_content.strip() and len(current_content) > 20:
-                                chunk_text = f"[{current_heading}]\n{current_content.strip()}"
-                                semantic_chunks.append(chunk_text)
-                            
-                            current_heading = text
-                            current_content = ""
-                        else:
-                            current_content += text + " "
-                
-                current_content += "\n\n"
-
-        if current_content.strip() and len(current_content) > 20:
-            chunk_text = f"[{current_heading}]\n{current_content.strip()}"
-            semantic_chunks.append(chunk_text)
+        if current_chunk:
+            semantic_chunks.append(current_chunk.strip())
 
         return semantic_chunks

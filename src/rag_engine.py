@@ -4,7 +4,6 @@ import io
 import base64
 import pickle
 import logging
-import asyncio
 import numpy as np
 from typing import Tuple, List, Dict, Any, Optional
 from PIL import Image
@@ -20,7 +19,7 @@ logger = logging.getLogger(__name__)
 
 class RAGEngine:
     def __init__(self):
-        logger.info("RAGEngine baslatiliyor (Asynchronous API Mode)...")
+        logger.info("RAGEngine baslatiliyor (Synchronous API Mode)...")
         self.db = DatabaseManager()
         self.llm_manager = LLMManager()
         self.guard = STE100Guard()
@@ -94,7 +93,7 @@ class RAGEngine:
         messages = [{"role": "user", "content": [{"type": "text", "text": prompt_text}]}]
         
         try:
-            raw_text = asyncio.run(vision_client.generate_async(messages, max_tokens=512))
+            raw_text = vision_client.generate(messages, max_tokens=512)
         except Exception as e:
             logger.error(f"Duzeltme sirasinda API hatasi: {e}")
             return draft_text
@@ -263,7 +262,7 @@ class RAGEngine:
         ]
         
         try:
-            raw_text = asyncio.run(vision_client.generate_async(messages, max_tokens=2048))
+            raw_text = vision_client.generate(messages, max_tokens=2048)
         except Exception as e:
             logger.error(f"API cagirilirken hata: {e}")
             raw_text = "Cevap uretilirken API sunucusunda bir hata olustu."

@@ -5,6 +5,7 @@ from typing import List
 from PIL import Image
 from qwen_vl_utils import process_vision_info
 from src.llm_manager import LLMManager
+from src.utils import load_config
 
 logger = logging.getLogger(__name__)
 
@@ -13,29 +14,15 @@ class VisionProcessor:
         self.max_tokens = max_tokens
         self.llm_manager = LLMManager()
         self.model, self.processor = self.llm_manager.load_vision_model()
-
-    def get_dynamic_batch_size(self) -> int:
-        if not torch.cuda.is_available():
-            return 1
-        try:
-            free_mem, _ = torch.cuda.mem_get_info()
-            free_gb = free_mem / (1024 ** 3)
-            if free_gb > 16.0:
-                return 4
-            elif free_gb > 10.0:
-                return 3
-            elif free_gb > 6.0:
-                return 2
-            return 1
-        except Exception as e:
-            logger.warning(f"VRAM kontrolu basarisiz: {e}")
-            return 1
+        
+        self.config = load_config()
+        self.batch_size = self.config.get("models", {}).get("vision_batch_size", 2)
 
     def generate_captions(self, images: List[Image.Image], prompt_text: str) -> List[str]:
         if not images:
             return []
 
-        batch_size = self.get_dynamic_batch_size()
+        batch_size = self.batch_size
         all_captions = []
         prompts = [prompt_text] * len(images)
 
@@ -72,7 +59,6 @@ class VisionProcessor:
                 ]
                 batch_captions = self.processor.batch_decode(trimmed_ids, skip_special_tokens=True)
                 
-                # Regex ile <thinking> bloklarini temizleme ve <answer> cikarimi
                 cleaned_captions = []
                 for raw_text in batch_captions:
                     final_text = re.sub(r"<thinking>.*?</thinking>", "", raw_text, flags=re.DOTALL).strip()
@@ -85,7 +71,7 @@ class VisionProcessor:
                 all_captions.extend(cleaned_captions)
                 
             except Exception as e:
-                logger.error(f"Toplu vision islemi basarisiz: {e}")
+                logger.error(f"Toplu vision islemi basarisiz: {e}", exc_info=True)
                 all_captions.extend(["[Visual Description Failed]"] * len(img_batch))
 
         return all_captions
