@@ -1,13 +1,13 @@
 import os
 import re
 import io
-import base64
 import pickle
 import logging
 import numpy as np
 from typing import Tuple, List, Dict, Any, Optional
 from PIL import Image
 from rank_bm25 import BM25Okapi
+import torch
 
 from src.database import DatabaseManager
 from src.llm_manager import LLMManager
@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 
 class RAGEngine:
     def __init__(self):
-        logger.info("RAGEngine baslatiliyor (Synchronous API Mode)...")
+        logger.info("RAGEngine baslatiliyor (Local Inference Mode)...")
         self.db = DatabaseManager()
         self.llm_manager = LLMManager()
         self.guard = STE100Guard()
@@ -68,16 +68,42 @@ class RAGEngine:
     def reload_cache(self) -> None:
         self._load_bm25_cache()
 
-    def _image_to_base64(self, image: Image.Image) -> str:
-        buffered = io.BytesIO()
-        image.save(buffered, format="PNG")
-        img_str = base64.b64encode(buffered.getvalue()).decode("utf-8")
-        return f"data:image/png;base64,{img_str}"
+    def _generate_local(self, messages: list, max_tokens: int) -> str:
+        vision_model, vision_processor = self.llm_manager.load_vision_model()
+        
+        text_prompt = vision_processor.apply_chat_template(
+            messages, tokenize=False, add_generation_prompt=True
+        )
+        
+        images = []
+        for msg in messages:
+            if isinstance(msg.get("content"), list):
+                for item in msg["content"]:
+                    if item.get("type") == "image" and "image" in item:
+                        images.append(item["image"])
+                        
+        inputs = vision_processor(
+            text=[text_prompt],
+            images=images if images else None,
+            padding=True,
+            return_tensors="pt"
+        ).to(vision_model.device)
+        
+        with torch.no_grad():
+            generated_ids = vision_model.generate(**inputs, max_new_tokens=max_tokens)
+            
+        generated_ids_trimmed = [
+            out_ids[len(in_ids):] for in_ids, out_ids in zip(inputs.input_ids, generated_ids)
+        ]
+        
+        output_text = vision_processor.batch_decode(
+            generated_ids_trimmed, skip_special_tokens=True, clean_up_tokenization_spaces=False
+        )[0]
+        
+        return output_text
 
-    def refine_answer(
-        self, draft_text: str, feedback_list: list, vision_client: Any
-    ) -> str:
-        logger.info("[Self-Correction] STE100 ihlalleri API uzerinden duzeltiliyor...")
+    def refine_answer(self, draft_text: str, feedback_list: list) -> str:
+        logger.info("[Self-Correction] STE100 ihlalleri yerel model uzerinden duzeltiliyor...")
         
         feedback_str = "\n".join(feedback_list)
         template = self.prompts.get(
@@ -93,9 +119,9 @@ class RAGEngine:
         messages = [{"role": "user", "content": [{"type": "text", "text": prompt_text}]}]
         
         try:
-            raw_text = vision_client.generate(messages, max_tokens=512)
+            raw_text = self._generate_local(messages, max_tokens=512)
         except Exception as e:
-            logger.error(f"Duzeltme sirasinda API hatasi: {e}")
+            logger.error(f"Duzeltme sirasinda yerel model hatasi: {e}")
             return draft_text
             
         final_answer = re.sub(r"<thinking>.*?</thinking>", "", raw_text, flags=re.DOTALL).strip()
@@ -144,7 +170,6 @@ class RAGEngine:
 
         embedder = self.llm_manager.load_embedder()
         reranker = self.llm_manager.load_reranker()
-        vision_client = self.llm_manager.get_vision_client()
         
         is_feedback = self._is_feedback_intent(query)
         intent_instruction = "Answer based on the context and previous conversation."
@@ -248,8 +273,7 @@ class RAGEngine:
 
         user_content = []
         if input_image:
-            b64_image = self._image_to_base64(input_image)
-            user_content.append({"type": "image_url", "image_url": {"url": b64_image}})
+            user_content.append({"type": "image", "image": input_image})
             user_prompt_text = "[IMAGE ATTACHED TO THIS MESSAGE]\n" + user_prompt_text
             
         user_content.append({"type": "text", "text": user_prompt_text})
@@ -262,10 +286,10 @@ class RAGEngine:
         ]
         
         try:
-            raw_text = vision_client.generate(messages, max_tokens=2048)
+            raw_text = self._generate_local(messages, max_tokens=2048)
         except Exception as e:
-            logger.error(f"API cagirilirken hata: {e}")
-            raw_text = "Cevap uretilirken API sunucusunda bir hata olustu."
+            logger.error(f"Yerel model cagirilirken hata: {e}")
+            raw_text = "Cevap uretilirken yerel modelde bir hata olustu."
 
         final_text = re.sub(r"<thinking>.*?</thinking>", "", raw_text, flags=re.DOTALL).strip()
         answer_match = re.search(r"<answer>(.*?)</answer>", final_text, flags=re.DOTALL)
@@ -291,7 +315,7 @@ class RAGEngine:
                     
                     previous_text = current_text
                     current_text = self.refine_answer(
-                        current_text, feedback_report, vision_client
+                        current_text, feedback_report
                     )
                     
                     if current_text.strip() == previous_text.strip():
