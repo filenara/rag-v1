@@ -1,10 +1,10 @@
 import os
 import re
-import io
+import json
 import pickle
 import logging
 import numpy as np
-from typing import Tuple, List, Dict, Any, Optional
+from typing import Tuple, List, Dict, Optional
 from PIL import Image
 from rank_bm25 import BM25Okapi
 import torch
@@ -102,6 +102,74 @@ class RAGEngine:
         
         return output_text
 
+    def _clean_output(self, raw_text: str) -> str:
+        text = re.sub(r"<thinking>.*?</thinking>", "", raw_text, flags=re.DOTALL).strip()
+        match = re.search(r"<answer>(.*?)</answer>", text, flags=re.DOTALL)
+        if match:
+            return match.group(1).strip()
+        return text
+
+    def _analyze_and_rewrite_query(self, query: str, history: list) -> Tuple[str, str]:
+        history_text = ""
+        if history:
+            for msg in history[-4:]:
+                role = "User" if msg.get("role") == "user" else "Assistant"
+                content = msg.get("content", "")
+                history_text += f"{role}: {content}\n"
+                
+        prompt = (
+            "You are a query analysis assistant. Based on the conversation history and the latest user query, "
+            "perform two tasks:\n"
+            "1. Rewrite the user query into a standalone, fully understandable question.\n"
+            "2. Extract the specific document name or file name if the user explicitly mentions one to search within. "
+            "If no document is mentioned, leave it empty.\n\n"
+            "You MUST respond ONLY with a valid JSON object in the following format:\n"
+            "{\n"
+            '  "standalone_query": "The rewritten query here",\n'
+            '  "source_filter": "extracted document name or empty string"\n'
+            "}\n\n"
+            f"History:\n{history_text}\n"
+            f"Latest Query: {query}\n"
+            "JSON Output:"
+        )
+        
+        messages = [{"role": "user", "content": [{"type": "text", "text": prompt}]}]
+        try:
+            raw_response = self._generate_local(messages, max_tokens=150)
+            cleaned_response = self._clean_output(raw_response)
+            
+            json_match = re.search(r"\{.*\}", cleaned_response, flags=re.DOTALL)
+            if json_match:
+                parsed = json.loads(json_match.group(0))
+                standalone = parsed.get("standalone_query", query)
+                filter_val = parsed.get("source_filter", "")
+                return standalone, filter_val
+            return query, ""
+        except Exception as e:
+            logger.error(f"Sorgu analizi (JSON) hatasi: {e}")
+            return query, ""
+
+    def _route_intent(self, query: str) -> str:
+        prompt = (
+            "Classify the following user message into one of two categories:\n"
+            "SEARCH: The user is asking a technical question that requires searching external documents.\n"
+            "CHAT: The user is providing feedback, asking to modify a previous answer (e.g. 'make it longer', 'are you sure?'), or chatting.\n"
+            "Respond ONLY with the word SEARCH or CHAT.\n\n"
+            f"Message: {query}\n"
+            "Category:"
+        )
+        
+        messages = [{"role": "user", "content": [{"type": "text", "text": prompt}]}]
+        try:
+            raw_intent = self._generate_local(messages, max_tokens=10)
+            intent = self._clean_output(raw_intent).upper()
+            if "CHAT" in intent:
+                return "CHAT"
+            return "SEARCH"
+        except Exception as e:
+            logger.error(f"Niyet analizi hatasi: {e}")
+            return "SEARCH"
+
     def refine_answer(self, draft_text: str, feedback_list: list) -> str:
         logger.info("[Self-Correction] STE100 ihlalleri yerel model uzerinden duzeltiliyor...")
         
@@ -120,16 +188,10 @@ class RAGEngine:
         
         try:
             raw_text = self._generate_local(messages, max_tokens=512)
+            return self._clean_output(raw_text)
         except Exception as e:
             logger.error(f"Duzeltme sirasinda yerel model hatasi: {e}")
             return draft_text
-            
-        final_answer = re.sub(r"<thinking>.*?</thinking>", "", raw_text, flags=re.DOTALL).strip()
-        answer_match = re.search(r"<answer>(.*?)</answer>", final_answer, flags=re.DOTALL)
-        if answer_match:
-            final_answer = answer_match.group(1).strip()
-            
-        return final_answer
 
     def _construct_system_prompt(self, use_ste100: bool = False) -> str:
         if use_ste100:
@@ -138,23 +200,6 @@ class RAGEngine:
             return f"{persona}\n\n---\n{rules}"
         
         return self.prompts.get("system_persona_standard", "You are a technical assistant.")
-
-    def _is_feedback_intent(self, query: str) -> bool:
-        feedback_words = [
-            "yanlis", "hatali", "tekrar bak", "duzelt", 
-            "wrong", "incorrect", "re-examine", "look again"
-        ]
-        return any(word in query.lower() for word in feedback_words)
-
-    def _format_history(self, history: list) -> str:
-        if not history:
-            return "No previous conversation."
-        formatted = ""
-        for turn in history:
-            role = "User" if turn.get("role") == "user" else "Assistant"
-            content = str(turn.get("content")).replace("\n", " ")
-            formatted += f"{role}: {content}\n"
-        return formatted
 
     def search_and_answer(
         self, 
@@ -171,57 +216,82 @@ class RAGEngine:
         embedder = self.llm_manager.load_embedder()
         reranker = self.llm_manager.load_reranker()
         
-        is_feedback = self._is_feedback_intent(query)
-        intent_instruction = "Answer based on the context and previous conversation."
+        logger.info("Sorgu baglam ve metaveri tespiti icin analiz ediliyor...")
+        standalone_query, source_filter = self._analyze_and_rewrite_query(query, history)
+        logger.info(f"Yeniden yazilan sorgu: {standalone_query}")
+        if source_filter:
+            logger.info(f"Tespit edilen hedef dokuman: {source_filter}")
+            
+        logger.info("Niyet analizi yapiliyor...")
+        intent = self._route_intent(standalone_query)
+        logger.info(f"Tespit edilen niyet: {intent}")
         
         context_text = ""
         best_meta = {}
         input_image = None
         
-        history_text = self._format_history(history)
-
-        if is_feedback and len(history) > 0:
-            logger.info("[Niyet] Feedback algilandi. Onceki baglam inceleniyor...")
+        if intent == "CHAT" and history:
+            logger.info("Arama atlandi. Onceki baglam yukleniyor...")
             for turn in reversed(history):
-                if turn.get("role") == "assistant" and "context_text" in turn:
+                if turn.get("role") == "assistant" and turn.get("context_text"):
                     context_text = turn["context_text"]
                     break
             
             if not context_text:
-                logger.warning("[Uyari] Gecmiste context bulunamadi, yeni arama yapiliyor...")
-                is_feedback = False 
-            else:
-                intent_instruction = (
-                    "The user indicated the previous answer was incorrect. "
-                    "Carefully re-examine the provided context."
-                )
+                logger.warning("Gecmis baglam bulunamadi. SEARCH moduna donuluyor.")
+                intent = "SEARCH"
         
-        if not is_feedback:
-            logger.info(f"[Niyet] Yeni arama: {query}")
+        if intent == "SEARCH" or not history:
             col = self.db.get_collection(collection_name)
-            
             doc_scores = {}
+            q_vec = embedder.encode([standalone_query], normalize_embeddings=True).tolist()
             
-            q_vec = embedder.encode([query], normalize_embeddings=True).tolist()
+            where_clause = None
+            if source_filter:
+                where_clause = {"source": {"$contains": source_filter}}
                 
-            vec_res = col.query(query_embeddings=q_vec, n_results=self.n_results)
+            def execute_retrieval(current_where):
+                scores_dict = {}
+                vec_res = col.query(
+                    query_embeddings=q_vec, 
+                    n_results=self.n_results, 
+                    where=current_where
+                )
+                
+                if vec_res["ids"] and vec_res["ids"][0]:
+                    for rank, doc_id in enumerate(vec_res["ids"][0]):
+                        if doc_id not in scores_dict: 
+                            scores_dict[doc_id] = 0
+                        scores_dict[doc_id] += 1 / (self.k_constant + rank)
+                        
+                if self.bm25:
+                    bm25_scores = self.bm25.get_scores(standalone_query.lower().split(" "))
+                    top_bm25_indices = np.argsort(bm25_scores)[::-1]
+                    
+                    rank = 0
+                    for idx in top_bm25_indices:
+                        if rank >= self.n_results:
+                            break
+                        doc_id = self.ids[idx]
+                        
+                        if current_where and source_filter:
+                            meta_source = self.doc_meta_map.get(doc_id, {}).get("source", "").lower()
+                            if source_filter.lower() not in meta_source:
+                                continue
+                                
+                        if doc_id not in scores_dict: 
+                            scores_dict[doc_id] = 0
+                        scores_dict[doc_id] += 1 / (self.k_constant + rank)
+                        rank += 1
+                        
+                return scores_dict
+                
+            doc_scores = execute_retrieval(where_clause)
             
-            if vec_res["ids"] and vec_res["ids"][0]:
-                for rank, doc_id in enumerate(vec_res["ids"][0]):
-                    if doc_id not in doc_scores: 
-                        doc_scores[doc_id] = 0
-                    doc_scores[doc_id] += 1 / (self.k_constant + rank)
-                    
-            if self.bm25:
-                bm25_scores = self.bm25.get_scores(query.lower().split(" "))
-                top_bm25_indices = np.argsort(bm25_scores)[::-1][:self.n_results]
+            if not doc_scores and where_clause:
+                logger.warning(f"'{source_filter}' filtresi sonuc dondurmedi. Fallback (Filtresiz) arama baslatiliyor.")
+                doc_scores = execute_retrieval(None)
                 
-                for rank, idx in enumerate(top_bm25_indices):
-                    doc_id = self.ids[idx]
-                    if doc_id not in doc_scores: 
-                        doc_scores[doc_id] = 0
-                    doc_scores[doc_id] += 1 / (self.k_constant + rank)
-                    
             sorted_candidates = sorted(
                 doc_scores.items(), key=lambda item: item[1], reverse=True
             )[:self.top_k_rerank]
@@ -236,39 +306,32 @@ class RAGEngine:
                 self.doc_meta_map.get(item[0], {}) for item in sorted_candidates
             ]
             
-            pairs = [[query, txt] for txt in candidates_text if txt and str(txt).strip()]
+            pairs = [[standalone_query, txt] for txt in candidates_text if txt and str(txt).strip()]
             
-            if not pairs:
-                logger.warning("Reranker icin gecerli metin cifti olusturulamadi.")
-                return "Icerik analizine uygun metin bulunamadi.", "", True, False, []
-                
-            scores = reranker.predict(pairs)
-            
-            if scores is None or len(scores) == 0:
-                logger.warning("Reranker gecerli bir skor uretmedi.")
-                return "Arama sonuclari siralanamadi.", "", True, False, []
+            if pairs:
+                scores = reranker.predict(pairs)
+                best_idx = np.argmax(scores)
+                context_text = candidates_text[best_idx]
+                best_meta = candidates_meta[best_idx]
+                image_path = best_meta.get("image_path", "")
+                if image_path and os.path.exists(image_path):
+                    try:
+                        input_image = Image.open(image_path)
+                    except Exception as e:
+                        logger.error(f"Resim yukleme hatasi: {e}")
 
-            best_idx = np.argmax(scores)
-            context_text = candidates_text[best_idx]
-            best_meta = candidates_meta[best_idx]
-
-            image_path = best_meta.get("image_path", "")
-            if image_path and os.path.exists(image_path):
-                logger.info(f"Gorsel baglam yukleniyor: {image_path}")
-                try:
-                    input_image = Image.open(image_path)
-                except Exception as e:
-                    logger.error(f"Resim yukleme hatasi: {e}")
-
-        template = self.prompts.get(
-            "response_template", "Context: {context_text}\nQuestion: {query}"
-        )
+        system_instruction = self._construct_system_prompt(use_ste100)
+        messages = [{"role": "system", "content": system_instruction}]
         
-        user_prompt_text = template.format(
-            intent_instruction=intent_instruction,
-            history_text=history_text,
-            context_text=context_text,
-            query=query
+        for msg in history[-4:]:
+            role = msg.get("role")
+            content = msg.get("content", "")
+            if isinstance(content, str) and content.strip():
+                messages.append({"role": role, "content": [{"type": "text", "text": content}]})
+
+        user_prompt_text = (
+            f"Context Information:\n{context_text}\n\n"
+            f"User Question/Request:\n{query}"
         )
 
         user_content = []
@@ -277,24 +340,14 @@ class RAGEngine:
             user_prompt_text = "[IMAGE ATTACHED TO THIS MESSAGE]\n" + user_prompt_text
             
         user_content.append({"type": "text", "text": user_prompt_text})
-
-        system_instruction = self._construct_system_prompt(use_ste100)
-
-        messages = [
-            {"role": "system", "content": system_instruction},
-            {"role": "user", "content": user_content}
-        ]
+        messages.append({"role": "user", "content": user_content})
         
         try:
             raw_text = self._generate_local(messages, max_tokens=2048)
+            final_text = self._clean_output(raw_text)
         except Exception as e:
             logger.error(f"Yerel model cagirilirken hata: {e}")
-            raw_text = "Cevap uretilirken yerel modelde bir hata olustu."
-
-        final_text = re.sub(r"<thinking>.*?</thinking>", "", raw_text, flags=re.DOTALL).strip()
-        answer_match = re.search(r"<answer>(.*?)</answer>", final_text, flags=re.DOTALL)
-        if answer_match:
-            final_text = answer_match.group(1).strip()
+            final_text = "Cevap uretilirken yerel modelde bir hata olustu."
 
         is_compliant = True
         was_corrected = False
@@ -312,24 +365,19 @@ class RAGEngine:
                 while not is_compliant and retries < max_retries:
                     retries += 1
                     logger.info(f"Ihlaller duzeltiliyor... (Deneme {retries}/{max_retries})")
-                    
                     previous_text = current_text
-                    current_text = self.refine_answer(
-                        current_text, feedback_report
-                    )
+                    current_text = self.refine_answer(current_text, feedback_report)
                     
                     if current_text.strip() == previous_text.strip():
                         break
                         
-                    is_compliant, feedback_report = self.guard.analyze_and_report(
-                        current_text
-                    )
+                    is_compliant, feedback_report = self.guard.analyze_and_report(current_text)
                     
                 final_text = current_text
                 was_corrected = True
 
         source_info = ""
-        if best_meta:
+        if best_meta and intent == "SEARCH":
             src_name = os.path.basename(best_meta.get("source", "Unknown"))
             pg_num = best_meta.get("page", "?")
             source_info = f"\n\n*(Kaynak: {src_name}, Sayfa {pg_num})*"

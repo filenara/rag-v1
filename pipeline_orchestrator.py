@@ -163,8 +163,14 @@ class PipelineOrchestrator:
                     data["visual_summary"] = summary
 
             logger.info(f"Metinler bolunuyor ve indeksleniyor: {filename}")
-            for data in pages_data:
-                page_chunks = self.splitter.extract_semantic_chunks(data["page_dict"])
+            self.splitter.reset_buffer()
+            
+            total_pages = len(pages_data)
+            
+            for idx, data in enumerate(pages_data):
+                # 2. ve 3. DEGISIKLIK: Sadece metni gonder ve son sayfa bilgisini ilet
+                is_last = (idx == total_pages - 1)
+                page_chunks = self.splitter.extract_semantic_chunks(data["text"], is_last_page=is_last)
 
                 for chunk_text in page_chunks:
                     final_chunk = f"--- SOURCE: {filename} | PAGE {data['page_num']} ---\n"

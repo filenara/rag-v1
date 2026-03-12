@@ -6,24 +6,16 @@ from src.llm_manager import LLMManager
 
 
 class STE100SemanticSplitter:
-    def __init__(self, similarity_threshold: float = 0.45, max_chunk_length: int = 1500):
+    def __init__(
+        self, 
+        similarity_threshold: float = 0.45, 
+        max_chunk_length: int = 1500
+    ):
         self.similarity_threshold = similarity_threshold
         self.max_chunk_length = max_chunk_length
         self.llm_manager = LLMManager()
         self.embedder = self.llm_manager.load_embedder()
-
-    def _extract_text_from_dict(self, page_dict: dict) -> str:
-        text_content = ""
-        blocks = page_dict.get("blocks", [])
-        
-        for block in blocks:
-            if block.get("type") == 0:
-                for line in block.get("lines", []):
-                    for span in line.get("spans", []):
-                        text_content += span.get("text", "").strip() + " "
-                text_content += "\n"
-                
-        return text_content.strip()
+        self.carry_over_buffer = ""
 
     def _cosine_similarity(self, vec1: np.ndarray, vec2: np.ndarray) -> float:
         dot_product = np.dot(vec1, vec2)
@@ -35,17 +27,33 @@ class STE100SemanticSplitter:
             
         return dot_product / (norm1 * norm2)
 
-    def extract_semantic_chunks(self, page_dict: dict) -> List[str]:
-        raw_text = self._extract_text_from_dict(page_dict)
-        if not raw_text:
+    def extract_semantic_chunks(self, raw_text: str, is_last_page: bool = False) -> List[str]:
+        combined_text = f"{self.carry_over_buffer} {raw_text}".strip()
+        self.carry_over_buffer = ""
+
+        if not combined_text:
             return []
 
-        sentences = re.split(r'(?<=[.!?]) +', raw_text)
-        sentences = [s.strip() for s in sentences if len(s.strip()) > 5]
+        ends_with_terminator = bool(re.search(r'(?:[.!?]|\n{2,})\s*$', combined_text))
+
+        split_pattern = r'(?<=[.!?])\s+|\n{2,}'
+        raw_sentences = re.split(split_pattern, combined_text)
+
+        sentences = [
+            s.replace('\n', ' ').strip() 
+            for s in raw_sentences 
+            if s and len(s.strip()) > 5
+        ]
 
         if not sentences:
             return []
-            
+
+        if not ends_with_terminator and not is_last_page:
+            self.carry_over_buffer = sentences.pop()
+
+        if not sentences:
+            return []
+
         if len(sentences) == 1:
             return sentences
 
@@ -71,3 +79,6 @@ class STE100SemanticSplitter:
             semantic_chunks.append(current_chunk.strip())
 
         return semantic_chunks
+
+    def reset_buffer(self) -> None:
+        self.carry_over_buffer = ""
