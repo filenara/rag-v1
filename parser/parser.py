@@ -1,189 +1,261 @@
 import pdfplumber
 import json
 import re
+import logging
+from typing import Dict, Any, Optional, List, Tuple
 
-PDF_PATH = "blackwell-datasheet-ultra-blackwell-4169750.pdf"
-START_PAGE = 103
-END_PAGE = 382
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
 
-# Gürültü ve İstenmeyen Desenler
-IGNORE_KEYWORDS = [
-    "issue 7", "2017-01-25", "(part of speech)", "word", "blank page", 
-    "approved meaning/", "approved example", "not approved", "page 2-1"
-]
 
-def clean_text(text):
-    if not text: return ""
-    return re.sub(r'\s+', ' ', text).strip()
+class STE100Parser:
+    def __init__(self, pdf_path: str, start_page: int, end_page: int):
+        self.pdf_path = pdf_path
+        self.start_page = start_page
+        self.end_page = end_page
+        self.parsed_dictionary: Dict[str, Any] = {}
+        self.current_word_data: Optional[Dict[str, str]] = None
+        
+        # Kati Sutun Matrisi (Strict Column Boundaries)
+        self.col1_max_x = 140
+        self.col2_max_x = 265
+        
+        self.pos_pattern = r'\((v|n|adj|adv|prep|conj|pron|art|pn)\)'
 
-def extract_alternatives(text):
-    """Metin içindeki BÜYÜK HARFLİ alternatifleri bulur."""
-    if not text: return []
-    pattern = r'([A-Z]{2,}(?:\s+[A-Z]+)*)\s*(?:\([a-z]+\))?'
-    matches = re.finditer(pattern, text)
-    alts = []
-    for m in matches:
-        full_match = m.group(0).strip()
-        if (len(full_match) > 1 or full_match in ["A", "I"]) and "NOTE" not in full_match:
-            if full_match not in alts:
-                alts.append(full_match)
-    return alts
-
-def is_real_keyword(text):
-    text = text.strip()
-    if not text: return False
-    # Keyword içinde ':' olmaz 
-    if ":" in text: return False
-    # Keyword genelde kısa olur 
-    if len(text.split()) > 4: return False
-    # "..." ile bitiyorsa veya başlıyorsa devam metnidir
-    if text.endswith("...") or text.startswith("..."): return False
-    return True
-
-def parse_ste100_v12(pdf_path, start_page, end_page):
-    results = []
-    
-    current_entry = {
-        "keyword": None,
-        "pos": None,
-        "is_approved": False,
-        "desc_buffer": [],
-        "ste_ex_buffer": [],
-        "non_ste_ex_buffer": []
-    }
-
-    def flush_entry():
-        if not current_entry["keyword"]: return
-
-        full_desc = clean_text(" ".join(current_entry["desc_buffer"]))
-        full_ste = clean_text(" ".join(current_entry["ste_ex_buffer"]))
-        full_non_ste = clean_text(" ".join(current_entry["non_ste_ex_buffer"]))
-
-        alternatives = []
-        if not current_entry["is_approved"]:
-            alternatives = extract_alternatives(full_desc)
-
-        examples = []
-        if full_ste or full_non_ste:
-            examples.append({
-                "ste": full_ste,
-                "non_ste": full_non_ste
-            })
-
-        results.append({
-            "keyword": current_entry["keyword"],
-            "part_of_speech": current_entry["pos"],
-            "is_approved": current_entry["is_approved"],
-            "approved_alternatives": alternatives,
-            "rule_description": full_desc,
-            "examples": examples
-        })
-
-    print(f"İşlem başlıyor: {pdf_path}...")
-
-    with pdfplumber.open(pdf_path) as pdf:
-        for i in range(start_page - 1, end_page): 
-            page = pdf.pages[i]
-            width = page.width
-            height = page.height
+    def is_unwanted_line(self, text: str) -> bool:
+        """Satirin baslik, alt bilgi veya tablo kalintisi olup olmadigini kontrol eder."""
+        if not text:
+            return True
             
-            # --- 1. KIRPMA (CROP) ---
-            # Footer'ı biraz daha az kesiyoruz (60 -> 50)
-            # Genişliği 'width' olarak tam alıyoruz.
-            # Üstten 80 piksel kesmek header için yeterli.
-            cropped_page = page.crop((0, 80, width, height - 50))
+        text_upper = text.upper().strip()
+        unwanted_exact = [
+            "SIMPLIFIED TECHNICAL ENGLISH",
+            "ASD-STE100",
+            "WORD APPROVED MEANING/",
+            "(PART OF SPEECH)",
+            "ALTERNATIVES",
+            "APPROVED EXAMPLE",
+            "NOT APPROVED",
+            "BLANK PAGE"
+        ]
+        
+        for unwanted in unwanted_exact:
+            if unwanted in text_upper:
+                return True
+                
+        if re.search(r'\b\d{4}-\d{2}-\d{2}\b', text_upper):
+            return True
+        if re.search(r'ISSUE \d+', text_upper):
+            return True
+        if re.search(r'PAGE \d+', text_upper) or re.search(r'PAGE [A-Z0-9-]+', text_upper):
+            return True
             
-            # --- 2. TABLO ÇIKARMA ---
-            # 'edge_min_length': Kenardaki çok küçük çizgileri yoksayar.
-            # 'snap_tolerance': Kelimelerin hizalanma toleransı (3 -> 4 yaptık).
-            table = cropped_page.extract_table({
-                "vertical_strategy": "text", 
-                "horizontal_strategy": "text",
-                "snap_tolerance": 4, 
-                "intersection_tolerance": 3
-            })
+        return False
 
-            if not table: continue
-
-            for row in table:
-                clean_row = [cell.strip().replace('\n', ' ') if cell else "" for cell in row]
+    def extract_page_lines(self, page: pdfplumber.page.Page) -> List[Tuple[str, str]]:
+        """Sayfadaki kelimeleri X eksenindeki kesin koordinatlarina gore 2 havuza ayirir."""
+        words = page.extract_words(keep_blank_chars=False)
+        lines_dict: Dict[float, List[Dict[str, Any]]] = {}
+        
+        page_height = float(page.height)
+        top_margin = page_height * 0.08
+        bottom_margin = page_height * 0.92
+        
+        for word in words:
+            if word["top"] < top_margin or word["bottom"] > bottom_margin:
+                continue
                 
-                # Boş satırları atla
-                if not any(clean_row): continue
-                
-                # Sütunları güvenli al (Eksik sütun varsa doldur)
-                col_word = clean_row[0] if len(clean_row) > 0 else ""
-                col_meaning = clean_row[1] if len(clean_row) > 1 else ""
-                col_ste = clean_row[2] if len(clean_row) > 2 else ""
-                # Eğer 4. sütun yoksa (pdfplumber bazen sağ tarafı almaz), boş string ata
-                col_non = clean_row[3] if len(clean_row) > 3 else ""
-
-                # Gürültü Filtresi
-                is_noise = False
-                for pattern in IGNORE_KEYWORDS:
-                    if pattern in col_word.lower():
-                        is_noise = True; break
-                if is_noise: continue
-
-                # --- KARAR MEKANİZMASI ---
-                is_new_entry = False
-                
-                if col_word:
-                    # 1. Sütun dolu ama bu gerçekten keyword mü?
-                    if is_real_keyword(col_word):
-                        is_new_entry = True
-                    else:
-                        # Değilse description buffer'a ekle.
-                        if current_entry["keyword"]:
-                            current_entry["desc_buffer"].append(col_word)
-                
-                if is_new_entry:
-                    flush_entry() # Eskiyi kaydet
+            top = round(word["top"], 1)
+            matched_top = None
+            
+            for existing_top in lines_dict.keys():
+                if abs(existing_top - top) < 3.0:
+                    matched_top = existing_top
+                    break
                     
-                    # Kelime Analizi
-                    match = re.match(r"([^\(]+)\s*(\(([a-z]+)\))?", col_word)
-                    if match:
-                        raw_keyword = match.group(1).strip()
-                        pos = match.group(3) if match.group(3) else "unknown"
-                    else:
-                        raw_keyword = col_word.strip()
-                        pos = "unknown"
-
-                    keyword_lower = raw_keyword.lower().replace(",", "")
-                    is_approved = raw_keyword.isupper()
-
-                    current_entry = {
-                        "keyword": keyword_lower,
-                        "pos": pos,
-                        "is_approved": is_approved,
-                        "desc_buffer": [col_meaning] if col_meaning else [],
-                        "ste_ex_buffer": [col_ste] if col_ste else [],
-                        "non_ste_ex_buffer": [col_non] if col_non else []
-                    }
+            if matched_top is None:
+                matched_top = top
+                lines_dict[matched_top] = []
                 
+            lines_dict[matched_top].append(word)
+            
+        sorted_tops = sorted(lines_dict.keys())
+        page_data = []
+        
+        for top in sorted_tops:
+            line_words = lines_dict[top]
+            line_words.sort(key=lambda x: x["x0"])
+            
+            if not line_words:
+                continue
+            
+            full_line_text = " ".join([w["text"] for w in line_words])
+            if self.is_unwanted_line(full_line_text):
+                continue
+                
+            # X > 310 olan kelimeleri dogrudan yoksay (3. ve 4. Kolon reddi)
+            c1_parts = [w["text"] for w in line_words if w["x0"] < self.col1_max_x]
+            c2_parts = [w["text"] for w in line_words if self.col1_max_x <= w["x0"] < self.col2_max_x]
+            
+            c1_text = " ".join(c1_parts).strip()
+            c2_text = " ".join(c2_parts).strip()
+            
+            if c1_text or c2_text:
+                page_data.append((c1_text, c2_text))
+                
+        return page_data
+
+    def has_pos_tag(self, text: str) -> bool:
+        """Metin icinde gecerli bir tur etiketi (POS) olup olmadigini kontrol eder."""
+        return bool(re.search(self.pos_pattern, text))
+
+    def process_word_data(self) -> None:
+        """Biriktirilen temiz kelime verisini sozluge kaydeder."""
+        if not self.current_word_data:
+            return
+            
+        c1_raw = self.current_word_data["c1"].strip()
+        c2_raw = self.current_word_data["c2"].strip()
+        
+        if not c1_raw:
+            self.current_word_data = None
+            return
+
+        pos_match = re.search(r'^([A-Za-z\s-]+)\s*' + self.pos_pattern, c1_raw)
+        if not pos_match:
+            self.current_word_data = None
+            return
+            
+        primary_word = pos_match.group(1).strip()
+        part_of_speech = pos_match.group(2).strip()
+        is_approved = primary_word.isupper()
+        
+        forms_set = {primary_word}
+        forms_list = [primary_word]
+        
+        rest_c1 = c1_raw[pos_match.end():].strip()
+        if rest_c1:
+            extra_words = re.findall(r'\b[A-Z]+\b', rest_c1)
+            for ew in extra_words:
+                if len(ew) > 1 and ew not in forms_set:
+                    forms_set.add(ew)
+                    forms_list.append(ew)
+
+        note_text = None
+        main_c2 = c2_raw
+        note_match = re.search(r'\bNOTE:(.*)', c2_raw, flags=re.IGNORECASE | re.DOTALL)
+        
+        if note_match:
+            note_text = note_match.group(1).strip()
+            main_c2 = c2_raw[:note_match.start()].strip()
+            
+        meaning = None
+        approved_alternatives = []
+        
+        if is_approved:
+            meaning = main_c2 if main_c2 else None
+        else:
+            alt_pattern = r'([A-Z][A-Z\s-]+)\s*' + self.pos_pattern
+            alt_matches = re.finditer(alt_pattern, main_c2)
+            found_alts = [m.group(0).strip() for m in alt_matches]
+            
+            if found_alts:
+                approved_alternatives = found_alts
+            elif main_c2:
+                if note_text:
+                    note_text = main_c2 + " " + note_text
                 else:
-                    # Devam satırı
-                    if current_entry["keyword"]:
-                        if col_meaning: current_entry["desc_buffer"].append(col_meaning)
-                        if col_ste: current_entry["ste_ex_buffer"].append(col_ste)
-                        if col_non: current_entry["non_ste_ex_buffer"].append(col_non)
+                    note_text = main_c2
 
-    flush_entry()
-    return results
+        root_keyword = primary_word.lower()
+        
+        if root_keyword not in self.parsed_dictionary:
+            self.parsed_dictionary[root_keyword] = {
+                "keyword": root_keyword,
+                "forms": [],
+                "notes": note_text
+            }
+        else:
+            existing_note = self.parsed_dictionary[root_keyword].get("notes")
+            if note_text:
+                if existing_note:
+                    self.parsed_dictionary[root_keyword]["notes"] = existing_note + " " + note_text
+                else:
+                    self.parsed_dictionary[root_keyword]["notes"] = note_text
 
-# --- ÇALIŞTIRMA ---
-try:
-    data = parse_ste100_v12(PDF_PATH, START_PAGE, END_PAGE)
-    output_file = "ste100_rules_v12.json"
-    with open(output_file, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=4, ensure_ascii=False)
+        for form in forms_list:
+            form_entry = {
+                "word_form": form,
+                "part_of_speech": part_of_speech,
+                "is_approved": is_approved,
+                "approved_alternatives": approved_alternatives.copy(),
+                "meaning": meaning
+            }
+            self.parsed_dictionary[root_keyword]["forms"].append(form_entry)
+            
+        self.current_word_data = None
 
-    print(f"\nBAŞARILI! '{output_file}' oluşturuldu.")
-    print(f"Toplam kural sayısı: {len(data)}")
+    def extract_data(self) -> None:
+        logger.info(f"PDF okuma baslatiliyor: {self.pdf_path}")
+        
+        try:
+            with pdfplumber.open(self.pdf_path) as pdf:
+                total_pages = len(pdf.pages)
+                safe_end = min(self.end_page, total_pages)
+                
+                for page_num in range(self.start_page - 1, safe_end):
+                    page = pdf.pages[page_num]
+                    page_lines = self.extract_page_lines(page)
+                    
+                    for c1, c2 in page_lines:
+                        if self.has_pos_tag(c1):
+                            self.process_word_data()
+                            self.current_word_data = {"c1": c1, "c2": c2}
+                        else:
+                            if self.current_word_data:
+                                if c1:
+                                    self.current_word_data["c1"] += " " + c1
+                                if c2:
+                                    self.current_word_data["c2"] += " " + c2
+                                    
+                    if (page_num + 1) % 10 == 0:
+                        logger.info(f"Islenen sayfa: {page_num + 1}/{safe_end}")
+                        
+                self.process_word_data()
+                
+        except Exception as e:
+            logger.error(f"PDF okunurken hata olustu: {e}")
+
+    def export_to_json(self, output_path: str) -> None:
+        if not self.parsed_dictionary:
+            logger.warning("Disa aktarilacak veri bulunamadi.")
+            return
+
+        final_list = list(self.parsed_dictionary.values())
+        
+        try:
+            with open(output_path, 'w', encoding='utf-8') as f:
+                json.dump(final_list, f, ensure_ascii=False, indent=4)
+            logger.info(f"Veriler basariyla {output_path} dosyasina kaydedildi. Toplam kelime grubu: {len(final_list)}")
+        except Exception as e:
+            logger.error(f"JSON kaydetme hatasi: {e}")
+
+
+if __name__ == "__main__":
+    PDF_FILE_PATH = "../data/ASD-STE100-ISSUE-7.pdf"
+    OUTPUT_JSON_PATH = "../config/ste100_rules.json"
     
-    # Kontrol
-    print("\n--- ÖRNEK ÇIKTI (İLK 3) ---")
-    print(json.dumps(data[:3], indent=2, ensure_ascii=False))
-
-except Exception as e:
-    print(f"Hata oluştu: {e}")
+    START_PAGE = 103
+    END_PAGE = 390
+    
+    parser = STE100Parser(
+        pdf_path=PDF_FILE_PATH, 
+        start_page=START_PAGE, 
+        end_page=END_PAGE
+    )
+    
+    parser.extract_data()
+    parser.export_to_json(OUTPUT_JSON_PATH)
