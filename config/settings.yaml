@@ -1,7 +1,7 @@
 app:
   name: "In-House AI Asistan"
   version: "2.0-Alpha"
-  welcome_message: "Kurumsal teknik döküman asistanına hoş geldiniz."
+  welcome_message: "Kurumsal teknik dokuman asistanina hos geldiniz."
 
 vector_db:
   persist_path: "./chroma_db"
@@ -10,15 +10,14 @@ vector_db:
   bm25_cache_path: "data/bm25_cache.pkl"
 
 models:
-  device: "cuda"
-  vision_model: "./local_models/Qwen2.5-VL-7B-Instruct"
-  embedding_model: "./local_models/bge-m3"
-  reranker_model: "./local_models/bge-reranker-v2-m3"
+  vllm_api_url: "http://127.0.0.1:8000"
+  vision_model_name: "Qwen/Qwen2.5-VL-7B-Instruct"
+  tei_embed_url: "http://127.0.0.1:8081"
+  tei_rerank_url: "http://127.0.0.1:8082"
   vision_batch_size: 4
 
 ingestion:
-  chunk_size: 1000
-  chunk_overlap: 200
+  max_chunk_length: 1500
   batch_size: 32
 
 retrieval:

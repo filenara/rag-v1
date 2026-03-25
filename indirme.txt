@@ -7,3 +7,5 @@ huggingface-cli download Qwen/Qwen2.5-VL-7B-Instruct --local-dir ./local_models/
 huggingface-cli download BAAI/bge-m3 --local-dir ./local_models/bge-m3 --local-dir-use-symlinks False
 
 huggingface-cli download BAAI/bge-reranker-v2-m3 --local-dir ./local_models/bge-reranker-v2-m3 --local-dir-use-symlinks False
+
+python -m spacy download en_core_web_sm

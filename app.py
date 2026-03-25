@@ -1,13 +1,14 @@
 import logging
+import requests
 import streamlit as st
 import streamlit_authenticator as stauth
 
-from src.rag_engine import RAGEngine
 from src.utils import load_config, load_secrets
 
-# Merkezi Loglama Ayari
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger(__name__)
+
+API_URL = "http://127.0.0.1:8050/ask"
 
 st.set_page_config(
     page_title="STE100 Technical Assistant",
@@ -15,13 +16,7 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-@st.cache_resource
-def get_engine():
-    return RAGEngine()
-
-engine = get_engine()
 config = load_config()
-
 COLLECTION_NAME = config.get("vector_db", {}).get("collection_name", "doc_v2_asset_store")
 
 def load_auth():
@@ -39,7 +34,7 @@ def load_auth():
         )
         return authenticator
     except Exception as e:
-        logger.error(f"Kimlik dogrulama yapilandirma hatasi: {e}")
+        logger.error("Kimlik dogrulama yapilandirma hatasi: %s", e)
         return None
 
 authenticator = load_auth()
@@ -48,7 +43,7 @@ if authenticator:
     try:
         name, authentication_status, username = authenticator.login("main")
     except Exception as e:
-        logger.error(f"Kimlik dogrulama modulu baslatilamadi: {e}")
+        logger.error("Kimlik dogrulama modulu baslatilamadi: %s", e)
         st.error("Giris sistemi su anda kullanilamiyor. Lutfen yoneticiye basvurun.")
         name, authentication_status, username = None, None, None
 else:
@@ -70,7 +65,14 @@ if authentication_status:
         )
         
         strict_mode = False
+        template_type = "General"
+        
         if ste100_mode:
+            template_type = st.radio(
+                "Uretim Formati Seciniz:",
+                options=["General", "Procedure", "Descriptive", "Safety"],
+                help="Modelin uretecegi metnin yapisal kurallarini belirler."
+            )
             strict_mode = st.toggle("Siki Denetim (Otomatik Duzeltme)", value=False)
             
         st.info(f"Veri Seti: {COLLECTION_NAME}")
@@ -90,7 +92,6 @@ if authentication_status:
     if "messages" not in st.session_state:
         st.session_state.messages = []
 
-    # Gecmis mesajlari render et
     for msg in st.session_state.messages:
         with st.chat_message(msg["role"]):
             st.markdown(msg["content"])
@@ -130,24 +131,33 @@ if authentication_status:
             st.markdown(prompt)
 
         with st.chat_message("assistant"):
-            status_container = st.status("Analiz ediliyor...", expanded=True)
+            status_container = st.status("Backend ile iletisim kuruluyor...", expanded=True)
             
             try:
-                status_container.write("Motor cagiriliyor...")
+                payload = {
+                    "query": prompt,
+                    "collection_name": COLLECTION_NAME,
+                    "history": st.session_state.messages[:-1],
+                    "use_ste100": ste100_mode,
+                    "strict_mode": strict_mode,
+                    "template_type": template_type
+                }
                 
-                # Tum is mantigi (STE100 denetimi dahil) artik serviste yapiliyor
-                final_text, context_text, is_compliant, was_corrected, feedback_report = engine.search_and_answer(
-                    query=prompt, 
-                    collection_name=COLLECTION_NAME,
-                    history=st.session_state.messages,
-                    use_ste100=ste100_mode,
-                    strict_mode=strict_mode
-                )
+                status_container.write("Analiz ediliyor ve yanit uretiliyor...")
+                
+                response = requests.post(API_URL, json=payload, timeout=300)
+                response.raise_for_status()
+                data = response.json()
+                
+                final_text = data.get("final_text", "")
+                context_text = data.get("context_text", "")
+                is_compliant = data.get("is_compliant", True)
+                was_corrected = data.get("was_corrected", False)
+                feedback_report = data.get("feedback_report", [])
                 
                 status_container.update(label="Islem Tamamlandi", state="complete", expanded=False)
                 st.markdown(final_text)
                 
-                # Sadece sonuclari UI'da gosteriyoruz
                 if ste100_mode:
                     if is_compliant:
                         expander_title = "Teknik Rapor (Kusursuz)"
@@ -186,7 +196,11 @@ if authentication_status:
                     "context_text": context_text
                 })
 
+            except requests.exceptions.RequestException as e:
+                logger.error("Backend API iletisim hatasi: %s", e, exc_info=True)
+                status_container.update(label="Sunucuya Ulasilamadi", state="error")
+                st.error("Arka plan servisi (Backend) yanit vermiyor. Lutfen yoneticiye basvurun.")
             except Exception as e:
-                logger.error(f"Uretim sirasinda kritik hata: {e}", exc_info=True)
+                logger.error("Uretim sirasinda kritik hata: %s", e, exc_info=True)
                 status_container.update(label="Sistem Hatasi", state="error")
                 st.error("Isteginizi islerken sistemsel bir sorun olustu. Lutfen daha sonra tekrar deneyin.")

@@ -33,7 +33,7 @@ class VisionCacheManager:
                 with open(self.filepath, 'r', encoding='utf-8') as f:
                     return json.load(f)
             except Exception as e:
-                logger.warning(f"Cache okuma hatasi: {e}")
+                logger.warning("Cache okuma hatasi: %s", e)
                 return {}
         return {}
 
@@ -42,7 +42,7 @@ class VisionCacheManager:
             with open(self.filepath, 'w', encoding='utf-8') as f:
                 json.dump(self.cache, f, ensure_ascii=False, indent=4)
         except Exception as e:
-            logger.error(f"Cache kaydetme hatasi: {e}")
+            logger.error("Cache kaydetme hatasi: %s", e)
 
     def get(self, img_hash: str) -> str:
         return self.cache.get(img_hash, "")
@@ -71,7 +71,7 @@ class CheckpointManager:
             with open(self.filepath, 'w', encoding='utf-8') as f:
                 json.dump(list(self.processed), f)
         except Exception as e:
-            logger.error(f"Checkpoint kaydetme hatasi: {e}")
+            logger.error("Checkpoint kaydetme hatasi: %s", e)
 
     def is_processed(self, filename: str) -> bool:
         return filename in self.processed
@@ -83,7 +83,10 @@ class PipelineOrchestrator:
         self.collection_name = self.cfg.get("vector_db", {}).get("collection_name", "doc_store")
         self.bm25_path = self.cfg.get("vector_db", {}).get("bm25_cache_path", "data/bm25_cache.pkl")
         self.assets_dir = os.path.join("data", "assets")
-        self.batch_size_limit = self.cfg.get("ingestion", {}).get("batch_size", 32)
+        
+        self.ingestion_cfg = self.cfg.get("ingestion", {})
+        self.batch_size_limit = self.ingestion_cfg.get("batch_size", 32)
+        self.max_chunk_length = self.ingestion_cfg.get("max_chunk_length", 1500)
 
         self.prompts = load_prompts()
         self.caption_prompt = self.prompts.get("caption_prompt", "Describe this technical image accurately.")
@@ -92,11 +95,11 @@ class PipelineOrchestrator:
         self.vision_cache = VisionCacheManager()
         self.parser = DocumentParser(assets_dir=self.assets_dir)
         self.vision = VisionProcessor()
-        self.splitter = STE100SemanticSplitter()
+        self.splitter = STE100SemanticSplitter(max_chunk_length=self.max_chunk_length)
         self.indexer = VectorIndexer(self.collection_name, self.bm25_path)
 
     def run_pipeline(self, pdf_paths: List[str]) -> None:
-        logger.info(f"Ingestion baslatiliyor. Koleksiyon: {self.collection_name}")
+        logger.info("Ingestion baslatiliyor. Koleksiyon: %s", self.collection_name)
         
         for pdf_path in pdf_paths:
             filename = os.path.basename(pdf_path)
@@ -106,7 +109,7 @@ class PipelineOrchestrator:
             try:
                 doc = self.parser.open_document(pdf_path)
             except Exception as e:
-                logger.error(f"Dosya acilamadi {filename}: {e}", exc_info=True)
+                logger.error("Dosya acilamadi %s: %s", filename, e, exc_info=True)
                 continue
 
             batch_chunks = []
@@ -130,12 +133,13 @@ class PipelineOrchestrator:
                 
             doc.close()
 
-            logger.info(f"Gorsel analizler yapiliyor: {filename}")
+            logger.info("Gorsel analizler yapiliyor: %s", filename)
             for data in tqdm(pages_data, desc="VLM Islemleri"):
                 if data["has_visual"]:
                     safe_text = data["text"][:2000] if data["text"] else "Metin bulunamadi."
                     formatted_prompt = self.caption_prompt.replace("{page_text}", safe_text)
                     
+                        
                     final_captions = []
                     images_to_process = []
                     hashes_to_process = []
@@ -162,13 +166,12 @@ class PipelineOrchestrator:
                         summary += f"- Analysis {idx+1}: {caption}\n"
                     data["visual_summary"] = summary
 
-            logger.info(f"Metinler bolunuyor ve indeksleniyor: {filename}")
+            logger.info("Metinler bolunuyor ve indeksleniyor: %s", filename)
             self.splitter.reset_buffer()
             
             total_pages = len(pages_data)
             
             for idx, data in enumerate(pages_data):
-                # 2. ve 3. DEGISIKLIK: Sadece metni gonder ve son sayfa bilgisini ilet
                 is_last = (idx == total_pages - 1)
                 page_chunks = self.splitter.extract_semantic_chunks(data["text"], is_last_page=is_last)
 

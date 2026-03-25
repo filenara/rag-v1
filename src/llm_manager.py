@@ -1,18 +1,15 @@
 import logging
 import threading
-from typing import Any, Optional, Tuple
+from typing import Dict, List, Optional, Union
 import requests
-import torch
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 
-from sentence_transformers import SentenceTransformer, CrossEncoder
-from transformers import AutoProcessor, Qwen2_5_VLForConditionalGeneration
 from src.utils import load_config
 
 logger = logging.getLogger(__name__)
 
 
-class VisionAPIClient:
+class VisionClient:
     def __init__(self, base_url: str, model_name: str):
         self.base_url = base_url.rstrip("/")
         self.model_name = model_name
@@ -30,27 +27,68 @@ class VisionAPIClient:
             "max_tokens": max_tokens,
             "temperature": 0.0
         }
-        
         endpoint = f"{self.base_url}/v1/chat/completions"
         
-        try:
-            response = requests.post(endpoint, json=payload, timeout=120)
+        response = requests.post(endpoint, json=payload, timeout=120)
+        if response.status_code == 200:
+            return response.json()["choices"][0]["message"]["content"]
+        
+        if response.status_code >= 500 or response.status_code == 429:
+            logger.warning(
+                "Sunucu hatasi alindi (%s), tekrar deneniyor...", 
+                response.status_code
+            )
+            response.raise_for_status()
             
-            if response.status_code == 200:
-                data = response.json()
-                return data["choices"][0]["message"]["content"]
+        raise RuntimeError(f"API Iletisim Hatasi ({response.status_code}): {response.text}")
+
+
+class EmbeddingClient:
+    def __init__(self, base_url: str):
+        self.endpoint = f"{base_url.rstrip('/')}/embed"
+
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, min=1, max=5),
+        retry=retry_if_exception_type(requests.exceptions.RequestException),
+        reraise=True
+    )
+    def encode(
+        self, texts: Union[str, List[str]], normalize_embeddings: bool = True, **kwargs
+    ) -> List[List[float]]:
+        if isinstance(texts, str):
+            texts = [texts]
             
-            error_text = response.text
-            
-            if response.status_code >= 500 or response.status_code == 429:
-                logger.warning(f"Sunucu hatasi alindi ({response.status_code}), tekrar deneniyor...")
-                response.raise_for_status()
-                
-            raise RuntimeError(f"API Iletisim Hatasi ({response.status_code}): {error_text}")
-            
-        except requests.exceptions.RequestException as e:
-            logger.warning(f"API baglanti sorunu, tekrar deneniyor... Hata: {e}")
-            raise
+        payload = {
+            "inputs": texts,
+            "normalize": normalize_embeddings
+        }
+        
+        response = requests.post(self.endpoint, json=payload, timeout=30)
+        response.raise_for_status()
+        return response.json()
+
+
+class RerankClient:
+    def __init__(self, base_url: str):
+        self.endpoint = f"{base_url.rstrip('/')}/rerank"
+
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, min=1, max=5),
+        retry=retry_if_exception_type(requests.exceptions.RequestException),
+        reraise=True
+    )
+    def predict(self, pairs: List[List[str]], **kwargs) -> List[float]:
+        payload = {
+            "texts": pairs
+        }
+        
+        response = requests.post(self.endpoint, json=payload, timeout=30)
+        response.raise_for_status()
+        
+        results = response.json()
+        return [item["score"] for item in results]
 
 
 class LLMManager:
@@ -69,73 +107,40 @@ class LLMManager:
         self.model_cfg = self.config.get("models")
         
         if not self.model_cfg:
-            error_msg = "Ayar dosyasinda (settings.yaml) 'models' anahtari bulunamadi."
+            error_msg = "Ayar dosyasinda 'models' anahtari bulunamadi."
             logger.error(error_msg)
             raise KeyError(error_msg)
         
-        self.device = self.model_cfg.get("device", "cpu")
-        self.api_base_url = self.model_cfg.get("api_base_url", "http://127.0.0.1:8000")
+        self.vllm_api_url = self.model_cfg.get("vllm_api_url", "http://127.0.0.1:8000")
+        self.vision_model_name = self.model_cfg.get(
+            "vision_model_name", "Qwen/Qwen2.5-VL-7B-Instruct"
+        )
+        self.tei_embed_url = self.model_cfg.get("tei_embed_url", "http://127.0.0.1:8081")
+        self.tei_rerank_url = self.model_cfg.get("tei_rerank_url", "http://127.0.0.1:8082")
         
-        self.vision_api_model_name = self.model_cfg.get("vision_model_name", "Qwen/Qwen2.5-VL-7B-Instruct")
+        self.vision_client: Optional[VisionClient] = None
+        self.embedder_client: Optional[EmbeddingClient] = None
+        self.reranker_client: Optional[RerankClient] = None
         
-        try:
-            self.embedding_model_path = self.model_cfg["embedding_model"]
-            self.rerank_model_path = self.model_cfg["reranker_model"]
-            self.vision_model_path = self.model_cfg.get("vision_model", "./local_models/Qwen2.5-VL-7B-Instruct")
-        except KeyError as e:
-            error_msg = f"Ayar dosyasinda zorunlu model yolu eksik: {e}"
-            logger.error(error_msg)
-            raise KeyError(error_msg)
-        
-        self.vision_client: Optional[VisionAPIClient] = None
-        self.embedder: Optional[Any] = None
-        self.reranker: Optional[Any] = None
-        
-        self.vision_local_model: Optional[Any] = None
-        self.vision_processor: Optional[Any] = None
-        
-        logger.info(f"LLM Manager baslatildi. (Cihaz: {self.device})")
+        logger.info("LLM Manager (Client Modu) baslatildi.")
 
-    def get_vision_client(self) -> VisionAPIClient:
+    def get_vision_client(self) -> VisionClient:
         if self.vision_client is None:
-            self.vision_client = VisionAPIClient(
-                base_url=self.api_base_url,
-                model_name=self.vision_api_model_name
+            self.vision_client = VisionClient(
+                base_url=self.vllm_api_url,
+                model_name=self.vision_model_name
             )
-            logger.info(f"Vision API Istemcisi hazir. (URL: {self.api_base_url})")
+            logger.info("Vision API Istemcisi hazir. URL: %s", self.vllm_api_url)
         return self.vision_client
 
-    def load_vision_model(self) -> Tuple[Any, Any]:
-        if self.vision_local_model is None or self.vision_processor is None:
-            logger.info(f"Yerel Vision modeli yukleniyor: {self.vision_model_path}")
-            
-            self.vision_processor = AutoProcessor.from_pretrained(self.vision_model_path)
-            
-            dtype = torch.bfloat16 if torch.cuda.is_available() and torch.cuda.is_bf16_supported() else torch.float16
-            
-            self.vision_local_model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
-                self.vision_model_path,
-                torch_dtype=dtype,
-                device_map=self.device
-            )
-            logger.info("Yerel Vision modeli ve islemcisi hazir.")
-            
-        return self.vision_local_model, self.vision_processor
-        
-    def load_embedder(self) -> Any:
-        if self.embedder is None:
-            logger.info(f"Yukleniyor: {self.embedding_model_path}")
-            self.embedder = SentenceTransformer(
-                self.embedding_model_path, device=self.device
-            )
-            logger.info("Embedding Model hazir.")
-        return self.embedder
+    def load_embedder(self) -> EmbeddingClient:
+        if self.embedder_client is None:
+            self.embedder_client = EmbeddingClient(base_url=self.tei_embed_url)
+            logger.info("Embedding API Istemcisi hazir. URL: %s", self.tei_embed_url)
+        return self.embedder_client
 
-    def load_reranker(self) -> Any:
-        if self.reranker is None:
-            logger.info(f"Yukleniyor: {self.rerank_model_path}")
-            self.reranker = CrossEncoder(
-                self.rerank_model_path, device=self.device, trust_remote_code=True
-            )
-            logger.info("Reranker Model hazir.")
-        return self.reranker
+    def load_reranker(self) -> RerankClient:
+        if self.reranker_client is None:
+            self.reranker_client = RerankClient(base_url=self.tei_rerank_url)
+            logger.info("Reranker API Istemcisi hazir. URL: %s", self.tei_rerank_url)
+        return self.reranker_client

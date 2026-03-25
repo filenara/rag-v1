@@ -26,9 +26,9 @@ class VectorIndexer:
         if not batch_chunks:
             return
 
-        logger.info(f"{len(batch_chunks)} adet metin parcasi vektorlestiriliyor...")
+        logger.info("%d adet metin parcasi vektorlestiriliyor...", len(batch_chunks))
         
-        embeddings = self.embedder.encode(batch_chunks, normalize_embeddings=True).tolist()
+        embeddings = self.embedder.encode(batch_chunks, normalize_embeddings=True)
         
         ids = [str(uuid.uuid4()) for _ in range(len(batch_chunks))]
         
@@ -67,4 +67,4 @@ class VectorIndexer:
         with open(self.bm25_path, "wb") as f:
             pickle.dump(cache_data, f)
             
-        logger.info(f"BM25 indeksi basariyla kaydedildi: {self.bm25_path}")
+        logger.info("BM25 indeksi basariyla kaydedildi: %s", self.bm25_path)

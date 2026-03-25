@@ -3,11 +3,13 @@ import re
 import json
 import pickle
 import logging
-import numpy as np
+import base64
+from io import BytesIO
 from typing import Tuple, List, Dict, Optional
+
+import numpy as np
 from PIL import Image
 from rank_bm25 import BM25Okapi
-import torch
 
 from src.database import DatabaseManager
 from src.llm_manager import LLMManager
@@ -19,7 +21,7 @@ logger = logging.getLogger(__name__)
 
 class RAGEngine:
     def __init__(self):
-        logger.info("RAGEngine baslatiliyor (Local Inference Mode)...")
+        logger.info("RAGEngine baslatiliyor (API Client Mode)...")
         self.db = DatabaseManager()
         self.llm_manager = LLMManager()
         self.guard = STE100Guard()
@@ -61,46 +63,39 @@ class RAGEngine:
                 }
                 logger.info("BM25 Cache basariyla hafizaya alindi.")
             except Exception as e:
-                logger.error(f"BM25 cache okuma hatasi: {e}")
+                logger.error("BM25 cache okuma hatasi: %s", e)
         else:
             logger.warning("BM25 cache dosyasi bulunamadi.")
 
     def reload_cache(self) -> None:
         self._load_bm25_cache()
 
-    def _generate_local(self, messages: list, max_tokens: int) -> str:
-        vision_model, vision_processor = self.llm_manager.load_vision_model()
-        
-        text_prompt = vision_processor.apply_chat_template(
-            messages, tokenize=False, add_generation_prompt=True
-        )
-        
-        images = []
+    def _generate_api(self, messages: list, max_tokens: int) -> str:
+        api_messages = []
         for msg in messages:
-            if isinstance(msg.get("content"), list):
-                for item in msg["content"]:
-                    if item.get("type") == "image" and "image" in item:
-                        images.append(item["image"])
-                        
-        inputs = vision_processor(
-            text=[text_prompt],
-            images=images if images else None,
-            padding=True,
-            return_tensors="pt"
-        ).to(vision_model.device)
-        
-        with torch.no_grad():
-            generated_ids = vision_model.generate(**inputs, max_new_tokens=max_tokens)
+            role = msg.get("role")
+            content = msg.get("content")
             
-        generated_ids_trimmed = [
-            out_ids[len(in_ids):] for in_ids, out_ids in zip(inputs.input_ids, generated_ids)
-        ]
-        
-        output_text = vision_processor.batch_decode(
-            generated_ids_trimmed, skip_special_tokens=True, clean_up_tokenization_spaces=False
-        )[0]
-        
-        return output_text
+            if isinstance(content, list):
+                api_content = []
+                for item in content:
+                    if item.get("type") == "image" and "image" in item:
+                        img = item["image"]
+                        buffered = BytesIO()
+                        img.save(buffered, format="PNG")
+                        img_str = base64.b64encode(buffered.getvalue()).decode("utf-8")
+                        api_content.append({
+                            "type": "image_url",
+                            "image_url": {"url": f"data:image/png;base64,{img_str}"}
+                        })
+                    else:
+                        api_content.append(item)
+                api_messages.append({"role": role, "content": api_content})
+            else:
+                api_messages.append(msg)
+                
+        vision_client = self.llm_manager.get_vision_client()
+        return vision_client.generate(api_messages, max_tokens=max_tokens)
 
     def _clean_output(self, raw_text: str) -> str:
         text = re.sub(r"<thinking>.*?</thinking>", "", raw_text, flags=re.DOTALL).strip()
@@ -135,7 +130,7 @@ class RAGEngine:
         
         messages = [{"role": "user", "content": [{"type": "text", "text": prompt}]}]
         try:
-            raw_response = self._generate_local(messages, max_tokens=150)
+            raw_response = self._generate_api(messages, max_tokens=150)
             cleaned_response = self._clean_output(raw_response)
             
             json_match = re.search(r"\{.*\}", cleaned_response, flags=re.DOTALL)
@@ -146,7 +141,7 @@ class RAGEngine:
                 return standalone, filter_val
             return query, ""
         except Exception as e:
-            logger.error(f"Sorgu analizi (JSON) hatasi: {e}")
+            logger.error("Sorgu analizi (JSON) hatasi: %s", e)
             return query, ""
 
     def _route_intent(self, query: str) -> str:
@@ -161,17 +156,17 @@ class RAGEngine:
         
         messages = [{"role": "user", "content": [{"type": "text", "text": prompt}]}]
         try:
-            raw_intent = self._generate_local(messages, max_tokens=10)
+            raw_intent = self._generate_api(messages, max_tokens=10)
             intent = self._clean_output(raw_intent).upper()
             if "CHAT" in intent:
                 return "CHAT"
             return "SEARCH"
         except Exception as e:
-            logger.error(f"Niyet analizi hatasi: {e}")
+            logger.error("Niyet analizi hatasi: %s", e)
             return "SEARCH"
 
     def refine_answer(self, draft_text: str, feedback_list: list) -> str:
-        logger.info("[Self-Correction] STE100 ihlalleri yerel model uzerinden duzeltiliyor...")
+        logger.info("[Self-Correction] STE100 ihlalleri API uzerinden duzeltiliyor...")
         
         feedback_str = "\n".join(feedback_list)
         template = self.prompts.get(
@@ -187,10 +182,10 @@ class RAGEngine:
         messages = [{"role": "user", "content": [{"type": "text", "text": prompt_text}]}]
         
         try:
-            raw_text = self._generate_local(messages, max_tokens=512)
+            raw_text = self._generate_api(messages, max_tokens=512)
             return self._clean_output(raw_text)
         except Exception as e:
-            logger.error(f"Duzeltme sirasinda yerel model hatasi: {e}")
+            logger.error("Duzeltme sirasinda API hatasi: %s", e)
             return draft_text
 
     def _construct_system_prompt(self, use_ste100: bool = False) -> str:
@@ -207,7 +202,8 @@ class RAGEngine:
         collection_name: str, 
         history: list = None, 
         use_ste100: bool = False, 
-        strict_mode: bool = False
+        strict_mode: bool = False,
+        template_type: str = "General"
     ) -> Tuple[str, str, bool, bool, list]:
         
         if history is None:
@@ -218,13 +214,13 @@ class RAGEngine:
         
         logger.info("Sorgu baglam ve metaveri tespiti icin analiz ediliyor...")
         standalone_query, source_filter = self._analyze_and_rewrite_query(query, history)
-        logger.info(f"Yeniden yazilan sorgu: {standalone_query}")
+        logger.info("Yeniden yazilan sorgu: %s", standalone_query)
         if source_filter:
-            logger.info(f"Tespit edilen hedef dokuman: {source_filter}")
+            logger.info("Tespit edilen hedef dokuman: %s", source_filter)
             
         logger.info("Niyet analizi yapiliyor...")
         intent = self._route_intent(standalone_query)
-        logger.info(f"Tespit edilen niyet: {intent}")
+        logger.info("Tespit edilen niyet: %s", intent)
         
         context_text = ""
         best_meta = {}
@@ -244,7 +240,7 @@ class RAGEngine:
         if intent == "SEARCH" or not history:
             col = self.db.get_collection(collection_name)
             doc_scores = {}
-            q_vec = embedder.encode([standalone_query], normalize_embeddings=True).tolist()
+            q_vec = embedder.encode([standalone_query], normalize_embeddings=True)
             
             where_clause = None
             if source_filter:
@@ -289,7 +285,7 @@ class RAGEngine:
             doc_scores = execute_retrieval(where_clause)
             
             if not doc_scores and where_clause:
-                logger.warning(f"'{source_filter}' filtresi sonuc dondurmedi. Fallback (Filtresiz) arama baslatiliyor.")
+                logger.warning("'%s' filtresi sonuc dondurmedi. Fallback (Filtresiz) arama baslatiliyor.", source_filter)
                 doc_scores = execute_retrieval(None)
                 
             sorted_candidates = sorted(
@@ -310,7 +306,7 @@ class RAGEngine:
             
             if pairs:
                 scores = reranker.predict(pairs)
-                best_idx = np.argmax(scores)
+                best_idx = int(np.argmax(scores))
                 context_text = candidates_text[best_idx]
                 best_meta = candidates_meta[best_idx]
                 image_path = best_meta.get("image_path", "")
@@ -318,9 +314,14 @@ class RAGEngine:
                     try:
                         input_image = Image.open(image_path)
                     except Exception as e:
-                        logger.error(f"Resim yukleme hatasi: {e}")
+                        logger.error("Resim yukleme hatasi: %s", e)
 
-        system_instruction = self._construct_system_prompt(use_ste100)
+        if use_ste100:
+            logger.info("Dinamik STE100 promptu uretiliyor. Format: %s", template_type)
+            system_instruction = self.guard.build_injection_prompt(context_text, template_type)
+        else:
+            system_instruction = self.prompts.get("system_persona_standard", "You are a technical assistant.")
+
         messages = [{"role": "system", "content": system_instruction}]
         
         for msg in history[-4:]:
@@ -343,10 +344,10 @@ class RAGEngine:
         messages.append({"role": "user", "content": user_content})
         
         try:
-            raw_text = self._generate_local(messages, max_tokens=2048)
+            raw_text = self._generate_api(messages, max_tokens=2048)
             final_text = self._clean_output(raw_text)
         except Exception as e:
-            logger.error(f"Yerel model cagirilirken hata: {e}")
+            logger.error("API cagirilirken hata: %s", e)
             final_text = "Cevap uretilirken yerel modelde bir hata olustu."
 
         is_compliant = True
@@ -364,7 +365,7 @@ class RAGEngine:
                 
                 while not is_compliant and retries < max_retries:
                     retries += 1
-                    logger.info(f"Ihlaller duzeltiliyor... (Deneme {retries}/{max_retries})")
+                    logger.info("Ihlaller duzeltiliyor... (Deneme %s/%s)", retries, max_retries)
                     previous_text = current_text
                     current_text = self.refine_answer(current_text, feedback_report)
                     

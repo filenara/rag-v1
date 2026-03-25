@@ -25,13 +25,43 @@ class DocumentParser:
         self.min_height = min_height
         self.image_dpi_scale = 2.0
         self.vector_spam_limit = 600
+        self.normal_text_size_limit = 11.0
         os.makedirs(self.assets_dir, exist_ok=True)
 
     def open_document(self, pdf_path: str) -> fitz.Document:
         return fitz.open(pdf_path)
 
     def extract_text(self, page: fitz.Page) -> str:
-        return page.get_text() or ""
+        blocks = page.get_text("dict")["blocks"]
+        extracted_text = ""
+
+        for block in blocks:
+            if block["type"] == 0:
+                block_text = ""
+                is_heading = False
+                
+                for line in block["lines"]:
+                    for span in line["spans"]:
+                        text = span["text"].strip()
+                        if not text:
+                            continue
+                        
+                        font_size = span["size"]
+                        font_name = span["font"].lower()
+
+                        if font_size > self.normal_text_size_limit or "bold" in font_name:
+                            is_heading = True
+                        
+                        block_text += text + " "
+                
+                block_text = block_text.strip()
+                if block_text:
+                    if is_heading:
+                        extracted_text += f"\n{block_text}\n"
+                    else:
+                        extracted_text += f"{block_text}\n"
+                        
+        return extracted_text.strip()
 
     def extract_text_dict(self, page: fitz.Page) -> dict:
         return page.get_text("dict")
@@ -81,13 +111,15 @@ class DocumentParser:
                 assets.append(VisualAsset(image=pil_img, path=save_path))
             except OSError as e:
                 logger.warning(
-                    f"Gorsel diske kaydedilemedi (Sayfa: {page_num}): {e}", 
+                    "Gorsel diske kaydedilemedi (Sayfa: %s): %s", 
+                    page_num, e, 
                     exc_info=True
                 )
                 continue
             except Exception as e:
                 logger.warning(
-                    f"Gorsel cikarimi sirasinda beklenmeyen hata (Sayfa: {page_num}): {e}", 
+                    "Gorsel cikarimi sirasinda beklenmeyen hata (Sayfa: %s): %s", 
+                    page_num, e, 
                     exc_info=True
                 )
                 continue
