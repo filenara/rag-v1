@@ -188,8 +188,8 @@ class RAGEngine:
             logger.error("Duzeltme sirasinda API hatasi: %s", e)
             return draft_text
 
-    def _construct_system_prompt(self, use_ste100: bool = False) -> str:
-        if use_ste100:
+    def _construct_system_prompt(self, use_ste100: bool = False, intent: str = "SEARCH") -> str:
+        if use_ste100 and intent == "SEARCH":
             persona = self.prompts.get("system_persona", "You are a helpful assistant.")
             rules = self.prompts.get("ste100_rules", "")
             return f"{persona}\n\n---\n{rules}"
@@ -316,7 +316,8 @@ class RAGEngine:
                     except Exception as e:
                         logger.error("Resim yukleme hatasi: %s", e)
 
-        if use_ste100:
+        # Yeni Mantik: Yalnizca SEARCH niyetinde ve use_ste100 aktifken kurallari yukle
+        if use_ste100 and intent == "SEARCH":
             logger.info("Dinamik STE100 promptu uretiliyor. Format: %s", template_type)
             system_instruction = self.guard.build_injection_prompt(context_text, template_type)
         else:
@@ -354,7 +355,8 @@ class RAGEngine:
         was_corrected = False
         feedback_report = []
 
-        if use_ste100:
+        # Yeni Mantik: Oto-denetim yalnizca SEARCH niyetinde ve use_ste100 aktifken calisir
+        if use_ste100 and intent == "SEARCH":
             logger.info("STE100 kurallari denetleniyor...")
             is_compliant, feedback_report = self.guard.analyze_and_report(final_text)
             

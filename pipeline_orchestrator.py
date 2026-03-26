@@ -107,87 +107,77 @@ class PipelineOrchestrator:
                 continue
 
             try:
-                doc = self.parser.open_document(pdf_path)
+                dl_doc = self.parser.parse_document(pdf_path)
             except Exception as e:
                 logger.error("Dosya acilamadi %s: %s", filename, e, exc_info=True)
                 continue
 
-            batch_chunks = []
-            batch_metadatas = []
-            pages_data = []
-
-            for page_num, page in enumerate(tqdm(doc, desc=f"Okunuyor: {filename}")):
-                text = self.parser.extract_text(page)
-                page_dict = self.parser.extract_text_dict(page)
-                visual_assets = self.parser.extract_visuals(page, filename, page_num + 1)
-                
-                pages_data.append({
-                    "page_num": page_num + 1,
-                    "text": text,
-                    "page_dict": page_dict,
-                    "visual_assets": visual_assets,
-                    "visual_summary": "",
-                    "has_visual": len(visual_assets) > 0,
-                    "image_path": visual_assets[0].path if len(visual_assets) > 0 else ""
-                })
-                
-            doc.close()
-
             logger.info("Gorsel analizler yapiliyor: %s", filename)
-            for data in tqdm(pages_data, desc="VLM Islemleri"):
-                if data["has_visual"]:
-                    safe_text = data["text"][:2000] if data["text"] else "Metin bulunamadi."
-                    formatted_prompt = self.caption_prompt.replace("{page_text}", safe_text)
-                    
+            visual_summaries_by_page = {}
+            image_paths_by_page = {}
+            
+            pictures = [item for item, level in dl_doc.iterate_items() if item.label == "picture"]
+            
+            for pic in tqdm(pictures, desc="VLM Islemleri (Resimler)"):
+                try:
+                    img = pic.get_image(dl_doc)
+                    if not img:
+                        continue
                         
-                    final_captions = []
-                    images_to_process = []
-                    hashes_to_process = []
+                    page_no = pic.prov[0].page_no if hasattr(pic, "prov") and pic.prov else 0
                     
-                    for asset in data["visual_assets"]:
-                        img_hash = get_image_hash(asset.image)
-                        cached_caption = self.vision_cache.get(img_hash)
+                    img_hash = get_image_hash(img)
+                    save_path = os.path.join(self.assets_dir, f"vis_{img_hash}.png")
+                    if not os.path.exists(save_path):
+                        img.save(save_path)
                         
-                        if cached_caption:
-                            final_captions.append(cached_caption)
-                        else:
-                            images_to_process.append(asset.image)
-                            hashes_to_process.append(img_hash)
-                    
-                    if images_to_process:
-                        new_captions = self.vision.generate_captions(images_to_process, formatted_prompt)
-                        for h, cap in zip(hashes_to_process, new_captions):
-                            self.vision_cache.set(h, cap)
-                            final_captions.append(cap)
+                    if page_no not in image_paths_by_page:
+                        image_paths_by_page[page_no] = save_path
+                        visual_summaries_by_page[page_no] = "\n[VISUAL DETECTED]:\n"
+                        
+                    cached_caption = self.vision_cache.get(img_hash)
+                    if cached_caption:
+                        caption = cached_caption
+                    else:
+                        safe_text = "Docling tarafindan tespit edilen teknik gorsel."
+                        formatted_prompt = self.caption_prompt.replace("{page_text}", safe_text)
+                        
+                        caption_list = self.vision.generate_captions([img], formatted_prompt)
+                        caption = caption_list[0] if caption_list else "Gorsel analiz edilemedi."
+                        
+                        self.vision_cache.set(img_hash, caption)
                         self.vision_cache.save()
                         
-                    summary = "\n[VISUAL/TABLE DETECTED]:\n"
-                    for idx, caption in enumerate(final_captions):
-                        summary += f"- Analysis {idx+1}: {caption}\n"
-                    data["visual_summary"] = summary
+                    visual_summaries_by_page[page_no] += f"- Analysis: {caption}\n"
+                    
+                except Exception as e:
+                    logger.warning("Gorsel islenirken hata: %s", e)
 
             logger.info("Metinler bolunuyor ve indeksleniyor: %s", filename)
-            self.splitter.reset_buffer()
+            chunks_data = self.splitter.extract_semantic_chunks(dl_doc, filename)
             
-            total_pages = len(pages_data)
+            batch_chunks = []
+            batch_metadatas = []
             
-            for idx, data in enumerate(pages_data):
-                is_last = (idx == total_pages - 1)
-                page_chunks = self.splitter.extract_semantic_chunks(data["text"], is_last_page=is_last)
-
-                for chunk_text in page_chunks:
-                    final_chunk = f"--- SOURCE: {filename} | PAGE {data['page_num']} ---\n"
-                    if data["has_visual"]:
-                        final_chunk += data["visual_summary"]
-                    final_chunk += f"{chunk_text}"
-                    
-                    batch_chunks.append(final_chunk)
-                    batch_metadatas.append({
-                        "source": filename, 
-                        "page": data["page_num"], 
-                        "has_visual": str(data["has_visual"]),
-                        "image_path": data["image_path"] 
-                    })
+            for chunk_dict in chunks_data:
+                chunk_text = chunk_dict.get("text", "")
+                meta = chunk_dict.get("metadata", {})
+                page_no = meta.get("page", 0)
+                
+                has_visual = page_no in visual_summaries_by_page
+                v_summary = visual_summaries_by_page.get(page_no, "")
+                i_path = image_paths_by_page.get(page_no, "")
+                
+                final_chunk = f"--- SOURCE: {filename} | PAGE {page_no} ---\n"
+                if has_visual:
+                    final_chunk += v_summary
+                final_chunk += chunk_text
+                
+                meta["has_visual"] = str(has_visual)
+                meta["image_path"] = i_path
+                
+                batch_chunks.append(final_chunk)
+                batch_metadatas.append(meta)
 
                 if len(batch_chunks) >= self.batch_size_limit:
                     self.indexer.save_batch(batch_chunks, batch_metadatas)

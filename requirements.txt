@@ -2,8 +2,6 @@ streamlit
 streamlit-authenticator==0.3.2
 chromadb
 sentence-transformers
-pymupdf
-pyYAML #pyyaml
 # torch
 # torchvision
 numpy
@@ -20,3 +18,4 @@ tqdm
 aiohttp
 tenacity
 spacy
+docling>=2.0.0
