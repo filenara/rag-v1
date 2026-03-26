@@ -39,10 +39,16 @@ class VisionCacheManager:
 
     def save(self) -> None:
         try:
-            with open(self.filepath, 'w', encoding='utf-8') as f:
+            dir_name = os.path.dirname(self.filepath)
+            if dir_name:
+                os.makedirs(dir_name, exist_ok=True)
+                
+            tmp_filepath = f"{self.filepath}.tmp"
+            with open(tmp_filepath, 'w', encoding='utf-8') as f:
                 json.dump(self.cache, f, ensure_ascii=False, indent=4)
+            os.replace(tmp_filepath, self.filepath)
         except Exception as e:
-            logger.error("Cache kaydetme hatasi: %s", e)
+            logger.error("Cache kaydetme hatasi: %s", e, exc_info=True)
 
     def get(self, img_hash: str) -> str:
         return self.cache.get(img_hash, "")
@@ -68,10 +74,16 @@ class CheckpointManager:
     def mark_as_done(self, filename: str) -> None:
         self.processed.add(filename)
         try:
-            with open(self.filepath, 'w', encoding='utf-8') as f:
-                json.dump(list(self.processed), f)
+            dir_name = os.path.dirname(self.filepath)
+            if dir_name:
+                os.makedirs(dir_name, exist_ok=True)
+                
+            tmp_filepath = f"{self.filepath}.tmp"
+            with open(tmp_filepath, 'w', encoding='utf-8') as f:
+                json.dump(list(self.processed), f, ensure_ascii=False, indent=4)
+            os.replace(tmp_filepath, self.filepath)
         except Exception as e:
-            logger.error("Checkpoint kaydetme hatasi: %s", e)
+            logger.error("Checkpoint kaydetme hatasi: %s", e, exc_info=True)
 
     def is_processed(self, filename: str) -> bool:
         return filename in self.processed
@@ -149,9 +161,10 @@ class PipelineOrchestrator:
                         self.vision_cache.save()
                         
                     visual_summaries_by_page[page_no] += f"- Analysis: {caption}\n"
+                    del img
                     
                 except Exception as e:
-                    logger.warning("Gorsel islenirken hata: %s", e)
+                    logger.warning("Gorsel islenirken hata: %s", e, exc_info=True)
 
             logger.info("Metinler bolunuyor ve indeksleniyor: %s", filename)
             chunks_data = self.splitter.extract_semantic_chunks(dl_doc, filename)

@@ -8,8 +8,6 @@ from src.utils import load_config, load_secrets
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger(__name__)
 
-API_URL = "http://127.0.0.1:8050/ask"
-
 st.set_page_config(
     page_title="STE100 Technical Assistant",
     layout="wide",
@@ -18,6 +16,7 @@ st.set_page_config(
 
 config = load_config()
 COLLECTION_NAME = config.get("vector_db", {}).get("collection_name", "doc_v2_asset_store")
+API_URL = config.get("app", {}).get("api_url", "http://127.0.0.1:8050/ask")
 
 def load_auth():
     config_auth = load_secrets()
@@ -134,10 +133,14 @@ if authentication_status:
             status_container = st.status("Backend ile iletisim kuruluyor...", expanded=True)
             
             try:
+                chat_history = st.session_state.messages[:-1]
+                if len(chat_history) > 6:
+                    chat_history = chat_history[-6:]
+                
                 payload = {
                     "query": prompt,
                     "collection_name": COLLECTION_NAME,
-                    "history": st.session_state.messages[:-1],
+                    "history": chat_history,
                     "use_ste100": ste100_mode,
                     "strict_mode": strict_mode,
                     "template_type": template_type

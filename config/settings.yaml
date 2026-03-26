@@ -2,6 +2,7 @@ app:
   name: "In-House AI Asistan"
   version: "2.0-Alpha"
   welcome_message: "Kurumsal teknik dokuman asistanina hos geldiniz."
+  api_url: "http://127.0.0.1:8050/ask"
 
 vector_db:
   persist_path: "./chroma_db"

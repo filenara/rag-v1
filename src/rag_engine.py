@@ -63,7 +63,7 @@ class RAGEngine:
                 }
                 logger.info("BM25 Cache basariyla hafizaya alindi.")
             except Exception as e:
-                logger.error("BM25 cache okuma hatasi: %s", e)
+                logger.error("BM25 cache okuma hatasi: %s", e, exc_info=True)
         else:
             logger.warning("BM25 cache dosyasi bulunamadi.")
 
@@ -133,22 +133,26 @@ class RAGEngine:
             raw_response = self._generate_api(messages, max_tokens=150)
             cleaned_response = self._clean_output(raw_response)
             
-            json_match = re.search(r"\{.*\}", cleaned_response, flags=re.DOTALL)
+            json_match = re.search(r"\{.*?\}", cleaned_response, flags=re.DOTALL)
             if json_match:
-                parsed = json.loads(json_match.group(0))
-                standalone = parsed.get("standalone_query", query)
-                filter_val = parsed.get("source_filter", "")
-                return standalone, filter_val
+                try:
+                    parsed = json.loads(json_match.group(0))
+                    standalone = parsed.get("standalone_query", query)
+                    filter_val = parsed.get("source_filter", "")
+                    return standalone, filter_val
+                except json.JSONDecodeError:
+                    logger.warning("JSON ayristirma hatasi. Ham metin kullanilacak.")
+                    return query, ""
             return query, ""
         except Exception as e:
-            logger.error("Sorgu analizi (JSON) hatasi: %s", e)
+            logger.error("Sorgu analizi hatasi: %s", e, exc_info=True)
             return query, ""
 
     def _route_intent(self, query: str) -> str:
         prompt = (
             "Classify the following user message into one of two categories:\n"
             "SEARCH: The user is asking a technical question that requires searching external documents.\n"
-            "CHAT: The user is providing feedback, asking to modify a previous answer (e.g. 'make it longer', 'are you sure?'), or chatting.\n"
+            "CHAT: The user is providing feedback, asking to modify a previous answer, or chatting.\n"
             "Respond ONLY with the word SEARCH or CHAT.\n\n"
             f"Message: {query}\n"
             "Category:"
@@ -162,7 +166,7 @@ class RAGEngine:
                 return "CHAT"
             return "SEARCH"
         except Exception as e:
-            logger.error("Niyet analizi hatasi: %s", e)
+            logger.error("Niyet analizi hatasi: %s", e, exc_info=True)
             return "SEARCH"
 
     def refine_answer(self, draft_text: str, feedback_list: list) -> str:
@@ -185,7 +189,7 @@ class RAGEngine:
             raw_text = self._generate_api(messages, max_tokens=512)
             return self._clean_output(raw_text)
         except Exception as e:
-            logger.error("Duzeltme sirasinda API hatasi: %s", e)
+            logger.error("Duzeltme sirasinda API hatasi: %s", e, exc_info=True)
             return draft_text
 
     def _construct_system_prompt(self, use_ste100: bool = False, intent: str = "SEARCH") -> str:
@@ -262,19 +266,20 @@ class RAGEngine:
                         
                 if self.bm25:
                     bm25_scores = self.bm25.get_scores(standalone_query.lower().split(" "))
+                    
+                    if current_where and source_filter:
+                        for idx, doc_id in enumerate(self.ids):
+                            meta_source = self.doc_meta_map.get(doc_id, {}).get("source", "").lower()
+                            if source_filter.lower() not in meta_source:
+                                bm25_scores[idx] = -1.0
+                                
                     top_bm25_indices = np.argsort(bm25_scores)[::-1]
                     
                     rank = 0
                     for idx in top_bm25_indices:
-                        if rank >= self.n_results:
+                        if rank >= self.n_results or bm25_scores[idx] < 0:
                             break
                         doc_id = self.ids[idx]
-                        
-                        if current_where and source_filter:
-                            meta_source = self.doc_meta_map.get(doc_id, {}).get("source", "").lower()
-                            if source_filter.lower() not in meta_source:
-                                continue
-                                
                         if doc_id not in scores_dict: 
                             scores_dict[doc_id] = 0
                         scores_dict[doc_id] += 1 / (self.k_constant + rank)
@@ -285,7 +290,7 @@ class RAGEngine:
             doc_scores = execute_retrieval(where_clause)
             
             if not doc_scores and where_clause:
-                logger.warning("'%s' filtresi sonuc dondurmedi. Fallback (Filtresiz) arama baslatiliyor.", source_filter)
+                logger.warning("'%s' filtresi sonuc dondurmedi. Fallback arama baslatiliyor.", source_filter)
                 doc_scores = execute_retrieval(None)
                 
             sorted_candidates = sorted(
@@ -314,9 +319,8 @@ class RAGEngine:
                     try:
                         input_image = Image.open(image_path)
                     except Exception as e:
-                        logger.error("Resim yukleme hatasi: %s", e)
+                        logger.error("Resim yukleme hatasi: %s", e, exc_info=True)
 
-        # Yeni Mantik: Yalnizca SEARCH niyetinde ve use_ste100 aktifken kurallari yukle
         if use_ste100 and intent == "SEARCH":
             logger.info("Dinamik STE100 promptu uretiliyor. Format: %s", template_type)
             system_instruction = self.guard.build_injection_prompt(context_text, template_type)
@@ -348,14 +352,13 @@ class RAGEngine:
             raw_text = self._generate_api(messages, max_tokens=2048)
             final_text = self._clean_output(raw_text)
         except Exception as e:
-            logger.error("API cagirilirken hata: %s", e)
+            logger.error("API cagirilirken hata: %s", e, exc_info=True)
             final_text = "Cevap uretilirken yerel modelde bir hata olustu."
 
         is_compliant = True
         was_corrected = False
         feedback_report = []
 
-        # Yeni Mantik: Oto-denetim yalnizca SEARCH niyetinde ve use_ste100 aktifken calisir
         if use_ste100 and intent == "SEARCH":
             logger.info("STE100 kurallari denetleniyor...")
             is_compliant, feedback_report = self.guard.analyze_and_report(final_text)

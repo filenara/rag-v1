@@ -6,6 +6,8 @@ from typing import List, Dict, Any, Tuple
 
 logger = logging.getLogger(__name__)
 
+_SPACY_MODEL = None
+
 
 class STE100Guard:
     def __init__(
@@ -14,21 +16,25 @@ class STE100Guard:
         structural_rules_path: str = "config/ste100_structural_rules.json",
         core_rules_path: str = "config/ste100_core_rules.json"
     ):
+        global _SPACY_MODEL
+        
         self.dictionary_path = dictionary_path
         self.structural_rules_path = structural_rules_path
         self.core_rules_path = core_rules_path
         
-        # Verilerin disaridan iceriye yuklenmesi
         self.dictionary_rules = self._load_json(self.dictionary_path, "rules")
         self.structural_rules = self._load_json(self.structural_rules_path, "rules")
         self.core_rules = self._load_json_list(self.core_rules_path, "core_rules")
         
-        logger.info("STE100Guard icin spaCy (en_core_web_sm) yukleniyor...")
-        try:
-            self.nlp = spacy.load("en_core_web_sm")
-        except OSError:
-            logger.error("spaCy 'en_core_web_sm' modeli bulunamadi.")
-            self.nlp = None
+        if _SPACY_MODEL is None:
+            logger.info("STE100Guard icin spaCy (en_core_web_sm) bellege aliniyor...")
+            try:
+                _SPACY_MODEL = spacy.load("en_core_web_sm")
+            except OSError:
+                logger.error("spaCy 'en_core_web_sm' modeli bulunamadi.")
+                _SPACY_MODEL = None
+                
+        self.nlp = _SPACY_MODEL
 
     def _load_json(self, path: str, key: str = None) -> List[Dict[str, Any]]:
         if os.path.exists(path):
@@ -39,7 +45,7 @@ class STE100Guard:
                         return data.get(key, [])
                     return data if isinstance(data, list) else []
             except Exception as e:
-                logger.error("JSON yukleme hatasi (%s): %s", path, e)
+                logger.error("JSON yukleme hatasi (%s): %s", path, e, exc_info=True)
         else:
             logger.warning("Kural dosyasi bulunamadi: %s", path)
         return []
@@ -53,7 +59,7 @@ class STE100Guard:
                         return data.get(key, [])
                     return data if isinstance(data, list) else []
             except Exception as e:
-                logger.error("JSON yukleme hatasi (%s): %s", path, e)
+                logger.error("JSON yukleme hatasi (%s): %s", path, e, exc_info=True)
         else:
             logger.warning("Core kural dosyasi bulunamadi: %s", path)
         return []
@@ -97,7 +103,6 @@ class STE100Guard:
                 
         prompt_parts.append("</DYNAMIC_RULES>\n")
 
-        # NLP tabanli denetim mekanizmasinin ciktisi buraya ekleniyor
         _, lexicon_restrictions = self.analyze_and_report(context_text)
         if lexicon_restrictions:
             prompt_parts.append("<DICTIONARY_RESTRICTIONS>")
