@@ -99,6 +99,9 @@ class PipelineOrchestrator:
         self.ingestion_cfg = self.cfg.get("ingestion", {})
         self.batch_size_limit = self.ingestion_cfg.get("batch_size", 32)
         self.max_chunk_length = self.ingestion_cfg.get("max_chunk_length", 1500)
+        
+        self.max_image_size = self.ingestion_cfg.get("max_image_size", 1024)
+        self.clear_every_n_images = self.ingestion_cfg.get("clear_every_n_images", 5)
 
         self.prompts = load_prompts()
         self.caption_prompt = self.prompts.get("caption_prompt", "Describe this technical image accurately.")
@@ -129,12 +132,15 @@ class PipelineOrchestrator:
             image_paths_by_page = {}
             
             pictures = [item for item, level in dl_doc.iterate_items() if item.label == "picture"]
+            image_process_counter = 0
             
             for pic in tqdm(pictures, desc="VLM Islemleri (Resimler)"):
                 try:
                     img = pic.get_image(dl_doc)
                     if not img:
                         continue
+                        
+                    img.thumbnail((self.max_image_size, self.max_image_size), Image.Resampling.LANCZOS)
                         
                     page_no = pic.prov[0].page_no if hasattr(pic, "prov") and pic.prov else 0
                     
@@ -163,8 +169,14 @@ class PipelineOrchestrator:
                     visual_summaries_by_page[page_no] += f"- Analysis: {caption}\n"
                     del img
                     
+                    image_process_counter += 1
+                    if image_process_counter % self.clear_every_n_images == 0:
+                        self._clear_memory()
+                    
                 except Exception as e:
                     logger.warning("Gorsel islenirken hata: %s", e, exc_info=True)
+
+            self._clear_memory()
 
             logger.info("Metinler bolunuyor ve indeksleniyor: %s", filename)
             chunks_data = self.splitter.extract_semantic_chunks(dl_doc, filename)

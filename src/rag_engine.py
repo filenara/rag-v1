@@ -37,6 +37,7 @@ class RAGEngine:
         self.ids: List[str] = []
         self.doc_text_map: Dict[str, str] = {}
         self.doc_meta_map: Dict[str, dict] = {}
+        self.source_to_indices: Dict[str, List[int]] = {}
         
         self._load_bm25_cache()
 
@@ -61,6 +62,15 @@ class RAGEngine:
                 self.doc_meta_map = {
                     doc_id: meta for doc_id, meta in zip(self.ids, metadatas)
                 }
+                
+                self.source_to_indices = {}
+                for idx, doc_id in enumerate(self.ids):
+                    meta = self.doc_meta_map.get(doc_id, {})
+                    source = meta.get("source", "").lower()
+                    if source not in self.source_to_indices:
+                        self.source_to_indices[source] = []
+                    self.source_to_indices[source].append(idx)
+                    
                 logger.info("BM25 Cache basariyla hafizaya alindi.")
             except Exception as e:
                 logger.error("BM25 cache okuma hatasi: %s", e, exc_info=True)
@@ -265,13 +275,20 @@ class RAGEngine:
                         scores_dict[doc_id] += 1 / (self.k_constant + rank)
                         
                 if self.bm25:
-                    bm25_scores = self.bm25.get_scores(standalone_query.lower().split(" "))
+                    bm25_scores = np.array(self.bm25.get_scores(standalone_query.lower().split(" ")))
                     
                     if current_where and source_filter:
-                        for idx, doc_id in enumerate(self.ids):
-                            meta_source = self.doc_meta_map.get(doc_id, {}).get("source", "").lower()
-                            if source_filter.lower() not in meta_source:
-                                bm25_scores[idx] = -1.0
+                        filter_lower = source_filter.lower()
+                        valid_indices = []
+                        
+                        for src, indices in self.source_to_indices.items():
+                            if filter_lower in src:
+                                valid_indices.extend(indices)
+                        
+                        mask = np.ones(len(bm25_scores), dtype=bool)
+                        if valid_indices:
+                            mask[valid_indices] = False
+                        bm25_scores[mask] = -1.0
                                 
                     top_bm25_indices = np.argsort(bm25_scores)[::-1]
                     
@@ -289,10 +306,6 @@ class RAGEngine:
                 
             doc_scores = execute_retrieval(where_clause)
             
-            if not doc_scores and where_clause:
-                logger.warning("'%s' filtresi sonuc dondurmedi. Fallback arama baslatiliyor.", source_filter)
-                doc_scores = execute_retrieval(None)
-                
             sorted_candidates = sorted(
                 doc_scores.items(), key=lambda item: item[1], reverse=True
             )[:self.top_k_rerank]
@@ -300,21 +313,28 @@ class RAGEngine:
             if not sorted_candidates:
                 return "Ilgili sonuc bulunamadi.", "", True, False, []
             
-            candidates_text = [
-                self.doc_text_map.get(item[0], "") for item in sorted_candidates
-            ]
-            candidates_meta = [
-                self.doc_meta_map.get(item[0], {}) for item in sorted_candidates
-            ]
+            valid_candidates = []
+            for item in sorted_candidates:
+                doc_id = item[0]
+                txt = self.doc_text_map.get(doc_id, "")
+                meta = self.doc_meta_map.get(doc_id, {})
+                
+                if txt and str(txt).strip():
+                    valid_candidates.append({
+                        "text": txt,
+                        "meta": meta
+                    })
             
-            pairs = [[standalone_query, txt] for txt in candidates_text if txt and str(txt).strip()]
+            pairs = [[standalone_query, cand["text"]] for cand in valid_candidates]
             
             if pairs:
                 scores = reranker.predict(pairs)
                 best_idx = int(np.argmax(scores))
-                context_text = candidates_text[best_idx]
-                best_meta = candidates_meta[best_idx]
+                
+                context_text = valid_candidates[best_idx]["text"]
+                best_meta = valid_candidates[best_idx]["meta"]
                 image_path = best_meta.get("image_path", "")
+                
                 if image_path and os.path.exists(image_path):
                     try:
                         input_image = Image.open(image_path)
