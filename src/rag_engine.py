@@ -120,50 +120,83 @@ class RAGEngine:
             for msg in history[-4:]:
                 role = "User" if msg.get("role") == "user" else "Assistant"
                 content = msg.get("content", "")
-                history_text += f"{role}: {content}\n"
+                if isinstance(content, str):
+                    history_text += f"{role}: {content}\n"
                 
         prompt = (
-            "You are a query analysis assistant. Based on the conversation history and the latest user query, "
-            "perform two tasks:\n"
-            "1. Rewrite the user query into a standalone, fully understandable question.\n"
+            "You are a strict query analysis engine. Your ONLY task is to output a valid, raw JSON object.\n"
+            "Do NOT include markdown formatting, backticks, or any conversational text.\n\n"
+            "Task:\n"
+            "1. Rewrite the user query into a standalone, fully understandable question based on the history.\n"
             "2. Extract the specific document name or file name if the user explicitly mentions one to search within. "
             "If no document is mentioned, leave it empty.\n\n"
-            "You MUST respond ONLY with a valid JSON object in the following format:\n"
+            "Format:\n"
             "{\n"
-            '  "standalone_query": "The rewritten query here",\n'
-            '  "source_filter": "extracted document name or empty string"\n'
+            '  "standalone_query": "string",\n'
+            '  "source_filter": "string"\n'
             "}\n\n"
             f"History:\n{history_text}\n"
             f"Latest Query: {query}\n"
-            "JSON Output:"
         )
         
         messages = [{"role": "user", "content": [{"type": "text", "text": prompt}]}]
         try:
-            raw_response = self._generate_api(messages, max_tokens=150)
+            raw_response = self._generate_api(messages, max_tokens=200)
             cleaned_response = self._clean_output(raw_response)
             
-            json_match = re.search(r"\{.*?\}", cleaned_response, flags=re.DOTALL)
-            if json_match:
-                try:
-                    parsed = json.loads(json_match.group(0))
-                    standalone = parsed.get("standalone_query", query)
-                    filter_val = parsed.get("source_filter", "")
-                    return standalone, filter_val
-                except json.JSONDecodeError:
-                    logger.warning("JSON ayristirma hatasi. Ham metin kullanilacak.")
+            cleaned_response = cleaned_response.strip()
+            if cleaned_response.startswith("```json"):
+                cleaned_response = cleaned_response[7:]
+            elif cleaned_response.startswith("```"):
+                cleaned_response = cleaned_response[3:]
+                
+            if cleaned_response.endswith("```"):
+                cleaned_response = cleaned_response[:-3]
+                
+            cleaned_response = cleaned_response.strip()
+            
+            try:
+                parsed = json.loads(cleaned_response)
+                standalone = parsed.get("standalone_query", query)
+                filter_val = parsed.get("source_filter", "")
+                return standalone, filter_val
+            except json.JSONDecodeError:
+                json_match = re.search(r"\{.*?\}", cleaned_response, flags=re.DOTALL)
+                if json_match:
+                    try:
+                        parsed = json.loads(json_match.group(0))
+                        standalone = parsed.get("standalone_query", query)
+                        filter_val = parsed.get("source_filter", "")
+                        return standalone, filter_val
+                    except json.JSONDecodeError:
+                        logger.warning("Regex ile bulunan JSON ayristirilamadi. Ham metin kullanilacak.")
+                        return query, ""
+                else:
+                    logger.warning("JSON yapisi bulunamadi. Ham metin kullanilacak.")
                     return query, ""
-            return query, ""
         except Exception as e:
             logger.error("Sorgu analizi hatasi: %s", e, exc_info=True)
             return query, ""
 
-    def _route_intent(self, query: str) -> str:
+    def _route_intent(self, query: str, history: list) -> str:
+        history_text = ""
+        if history:
+            for msg in history[-4:]:
+                role = "User" if msg.get("role") == "user" else "Assistant"
+                content = msg.get("content", "")
+                if isinstance(content, str):
+                    history_text += f"{role}: {content}\n"
+
         prompt = (
-            "Classify the following user message into one of two categories:\n"
-            "SEARCH: The user is asking a technical question that requires searching external documents.\n"
-            "CHAT: The user is providing feedback, asking to modify a previous answer, or chatting.\n"
-            "Respond ONLY with the word SEARCH or CHAT.\n\n"
+            "Classify the following user message into ONE of these specific categories:\n"
+            "QA: User is asking a technical question (e.g., 'how many bolts?', 'what is X?').\n"
+            "PROCEDURE: User wants a step-by-step procedure or instruction manual written.\n"
+            "DESCRIPTIVE: User wants a descriptive text or system description written.\n"
+            "SAFETY: User wants safety instructions or warnings written.\n"
+            "REVISION: User is providing feedback on the previous answer and wants it rewritten or fixed (e.g., 'make it shorter', 'you made a mistake', 'try again').\n"
+            "CHITCHAT: User is just chatting or saying hello.\n\n"
+            "Respond ONLY with the exact category name.\n\n"
+            f"History:\n{history_text}\n"
             f"Message: {query}\n"
             "Category:"
         )
@@ -171,13 +204,16 @@ class RAGEngine:
         messages = [{"role": "user", "content": [{"type": "text", "text": prompt}]}]
         try:
             raw_intent = self._generate_api(messages, max_tokens=10)
-            intent = self._clean_output(raw_intent).upper()
-            if "CHAT" in intent:
-                return "CHAT"
-            return "SEARCH"
+            intent = self._clean_output(raw_intent).upper().strip()
+            
+            valid_intents = ["QA", "PROCEDURE", "DESCRIPTIVE", "SAFETY", "REVISION", "CHITCHAT"]
+            for vi in valid_intents:
+                if vi in intent:
+                    return vi
+            return "QA"
         except Exception as e:
             logger.error("Niyet analizi hatasi: %s", e, exc_info=True)
-            return "SEARCH"
+            return "QA"
 
     def refine_answer(self, draft_text: str, feedback_list: list) -> str:
         logger.info("[Self-Correction] STE100 ihlalleri API uzerinden duzeltiliyor...")
@@ -233,25 +269,42 @@ class RAGEngine:
             logger.info("Tespit edilen hedef dokuman: %s", source_filter)
             
         logger.info("Niyet analizi yapiliyor...")
-        intent = self._route_intent(standalone_query)
+        # Artık history parametresini de gönderiyoruz
+        intent = self._route_intent(standalone_query, history)
         logger.info("Tespit edilen niyet: %s", intent)
         
+        # Niyete göre sistem parametrelerini (UI'dan gelenleri ezerek) otomatik ayarla
+        if intent in ["PROCEDURE", "DESCRIPTIVE", "SAFETY"]:
+            use_ste100 = True
+            template_type = intent.capitalize()
+            logical_intent = "SEARCH"
+        elif intent == "QA":
+            logical_intent = "SEARCH"
+        elif intent == "REVISION":
+            logical_intent = "REVISION"
+        else:
+            logical_intent = "CHAT"
+            
         context_text = ""
         best_meta = {}
         input_image = None
+        last_assistant_text = ""
         
-        if intent == "CHAT" and history:
-            logger.info("Arama atlandi. Onceki baglam yukleniyor...")
+        # Gecmis baglami ve metni yukle (REVISION ve CHAT icin)
+        if (logical_intent in ["CHAT", "REVISION"]) and history:
+            logger.info("Arama atlandi. Onceki baglam ve metin yukleniyor...")
             for turn in reversed(history):
-                if turn.get("role") == "assistant" and turn.get("context_text"):
-                    context_text = turn["context_text"]
+                if turn.get("role") == "assistant":
+                    context_text = turn.get("context_text", "")
+                    last_assistant_text = turn.get("content", "")
                     break
             
-            if not context_text:
-                logger.warning("Gecmis baglam bulunamadi. SEARCH moduna donuluyor.")
-                intent = "SEARCH"
+            if not last_assistant_text and logical_intent == "REVISION":
+                logger.warning("Gecmis asistan metni bulunamadi. QA moduna donuluyor.")
+                logical_intent = "SEARCH"
         
-        if intent == "SEARCH" or not history:
+        # Sadece arama yapilmasi gerekiyorsa RAG (BM25 + Vektor) calistirilir
+        if logical_intent == "SEARCH" or not history:
             col = self.db.get_collection(collection_name)
             doc_scores = {}
             q_vec = embedder.encode([standalone_query], normalize_embeddings=True)
@@ -276,11 +329,9 @@ class RAGEngine:
                         
                 if self.bm25:
                     bm25_scores = np.array(self.bm25.get_scores(standalone_query.lower().split(" ")))
-                    
                     if current_where and source_filter:
                         filter_lower = source_filter.lower()
                         valid_indices = []
-                        
                         for src, indices in self.source_to_indices.items():
                             if filter_lower in src:
                                 valid_indices.extend(indices)
@@ -291,7 +342,6 @@ class RAGEngine:
                         bm25_scores[mask] = -1.0
                                 
                     top_bm25_indices = np.argsort(bm25_scores)[::-1]
-                    
                     rank = 0
                     for idx in top_bm25_indices:
                         if rank >= self.n_results or bm25_scores[idx] < 0:
@@ -301,7 +351,6 @@ class RAGEngine:
                             scores_dict[doc_id] = 0
                         scores_dict[doc_id] += 1 / (self.k_constant + rank)
                         rank += 1
-                        
                 return scores_dict
                 
             doc_scores = execute_retrieval(where_clause)
@@ -318,7 +367,6 @@ class RAGEngine:
                 doc_id = item[0]
                 txt = self.doc_text_map.get(doc_id, "")
                 meta = self.doc_meta_map.get(doc_id, {})
-                
                 if txt and str(txt).strip():
                     valid_candidates.append({
                         "text": txt,
@@ -341,24 +389,53 @@ class RAGEngine:
                     except Exception as e:
                         logger.error("Resim yukleme hatasi: %s", e, exc_info=True)
 
-        if use_ste100 and intent == "SEARCH":
-            logger.info("Dinamik STE100 promptu uretiliyor. Format: %s", template_type)
-            system_instruction = self.guard.build_injection_prompt(context_text, template_type)
-        else:
-            system_instruction = self.prompts.get("system_persona_standard", "You are a technical assistant.")
-
-        messages = [{"role": "system", "content": system_instruction}]
+        # Mesaj yapisini insa et
+        messages = []
         
+        history_text_formatted = ""
         for msg in history[-4:]:
-            role = msg.get("role")
-            content = msg.get("content", "")
-            if isinstance(content, str) and content.strip():
-                messages.append({"role": role, "content": [{"type": "text", "text": content}]})
+            role_name = "User" if msg.get("role") == "user" else "Assistant"
+            content_val = msg.get("content", "")
+            if isinstance(content_val, str) and content_val.strip():
+                history_text_formatted += f"{role_name}: {content_val}\n"
+                
+        if not history_text_formatted.strip():
+            history_text_formatted = "No previous conversation."
 
-        user_prompt_text = (
-            f"Context Information:\n{context_text}\n\n"
-            f"User Question/Request:\n{query}"
-        )
+        if logical_intent == "REVISION":
+            logger.info("Revizyon promptu hazirlaniyor...")
+            system_instruction = "You are a Senior Technical Systems Engineer. Revise the document based strictly on the user's feedback."
+            messages.append({"role": "system", "content": system_instruction})
+            
+            revision_template = self.prompts.get(
+                "self_correction_prompt", 
+                "Fix this:\n{draft_answer}\nErrors/Feedback:\n{feedback_report}"
+            )
+            user_prompt_text = revision_template.format(
+                draft_answer=last_assistant_text,
+                feedback_report=query  # Kullanicinin istegi geri bildirim olarak veriliyor
+            )
+        else:
+            if use_ste100 and logical_intent == "SEARCH":
+                logger.info("Dinamik STE100 promptu uretiliyor. Format: %s", template_type)
+                system_instruction = self.guard.build_injection_prompt(context_text, template_type)
+                intent_instruction = f"Write the requested document strictly following ASD-STE100 rules in {template_type} format."
+            else:
+                system_instruction = self.prompts.get("system_persona_standard", "You are a technical assistant.")
+                intent_instruction = "Answer the user's technical question accurately and naturally using the provided context."
+
+            messages.append({"role": "system", "content": system_instruction})
+            
+            base_template = self.prompts.get(
+                "response_template", 
+                "Context Information:\n{context_text}\n\nUser Question/Request:\n{query}"
+            )
+            user_prompt_text = base_template.format(
+                intent_instruction=intent_instruction,
+                history_text=history_text_formatted.strip(),
+                context_text=context_text,
+                query=query
+            )
 
         user_content = []
         if input_image:
