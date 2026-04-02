@@ -269,11 +269,9 @@ class RAGEngine:
             logger.info("Tespit edilen hedef dokuman: %s", source_filter)
             
         logger.info("Niyet analizi yapiliyor...")
-        # Artık history parametresini de gönderiyoruz
         intent = self._route_intent(standalone_query, history)
         logger.info("Tespit edilen niyet: %s", intent)
         
-        # Niyete göre sistem parametrelerini (UI'dan gelenleri ezerek) otomatik ayarla
         if intent in ["PROCEDURE", "DESCRIPTIVE", "SAFETY"]:
             use_ste100 = True
             template_type = intent.capitalize()
@@ -290,7 +288,6 @@ class RAGEngine:
         input_image = None
         last_assistant_text = ""
         
-        # Gecmis baglami ve metni yukle (REVISION ve CHAT icin)
         if (logical_intent in ["CHAT", "REVISION"]) and history:
             logger.info("Arama atlandi. Onceki baglam ve metin yukleniyor...")
             for turn in reversed(history):
@@ -303,7 +300,6 @@ class RAGEngine:
                 logger.warning("Gecmis asistan metni bulunamadi. QA moduna donuluyor.")
                 logical_intent = "SEARCH"
         
-        # Sadece arama yapilmasi gerekiyorsa RAG (BM25 + Vektor) calistirilir
         if logical_intent == "SEARCH" or not history:
             col = self.db.get_collection(collection_name)
             doc_scores = {}
@@ -377,19 +373,25 @@ class RAGEngine:
             
             if pairs:
                 scores = reranker.predict(pairs)
-                best_idx = int(np.argmax(scores))
                 
-                context_text = valid_candidates[best_idx]["text"]
-                best_meta = valid_candidates[best_idx]["meta"]
+                # ENTEGRE EDILEN 1. YONTEM: En iyi 3 parcayi alarak baglami genisletme
+                top_indices = np.argsort(scores)[::-1][:3]
+                
+                context_texts = []
+                best_meta = valid_candidates[top_indices[0]]["meta"]
                 image_path = best_meta.get("image_path", "")
                 
+                for idx in top_indices:
+                    context_texts.append(valid_candidates[idx]["text"])
+                
+                context_text = "\n\n".join(context_texts)
+
                 if image_path and os.path.exists(image_path):
                     try:
                         input_image = Image.open(image_path)
                     except Exception as e:
                         logger.error("Resim yukleme hatasi: %s", e, exc_info=True)
 
-        # Mesaj yapisini insa et
         messages = []
         
         history_text_formatted = ""
@@ -413,7 +415,7 @@ class RAGEngine:
             )
             user_prompt_text = revision_template.format(
                 draft_answer=last_assistant_text,
-                feedback_report=query  # Kullanicinin istegi geri bildirim olarak veriliyor
+                feedback_report=query
             )
         else:
             if use_ste100 and logical_intent == "SEARCH":

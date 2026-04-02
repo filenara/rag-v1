@@ -13,17 +13,14 @@ class STE100Guard:
     def __init__(
         self, 
         dictionary_path: str = "config/ste100_rules.json", 
-        structural_rules_path: str = "config/ste100_structural_rules.json",
         core_rules_path: str = "config/ste100_core_rules.json"
     ):
         global _SPACY_MODEL
         
         self.dictionary_path = dictionary_path
-        self.structural_rules_path = structural_rules_path
         self.core_rules_path = core_rules_path
         
         self.dictionary_rules = self._load_json(self.dictionary_path, "rules")
-        self.structural_rules = self._load_json(self.structural_rules_path, "rules")
         self.core_rules = self._load_json_list(self.core_rules_path, "core_rules")
         
         if _SPACY_MODEL is None:
@@ -75,31 +72,24 @@ class STE100Guard:
         prompt_parts.append("<DYNAMIC_RULES>")
         prompt_parts.append(f"Output Format Required: {template_type.upper()}")
         
-        has_structural_rules = False
-        if self.structural_rules:
-            for rule in self.structural_rules:
-                if rule.get("category", "") in [template_type, "General"]:
-                    prompt_parts.append(f"- {rule.get('rule')}")
-                    has_structural_rules = True
-                    
-        if not has_structural_rules:
-            if template_type.lower() == "procedure":
-                prompt_parts.append("- Write short sentences. Use a maximum of 20 words in each sentence.")
-                prompt_parts.append("- Write only one instruction in each sentence unless two or more actions occur at the same time.")
-                prompt_parts.append("- Write instructions in the imperative(command) form.")
-                prompt_parts.append("- If you start an instruction with a descriptive statement(dependent phrase or clause), divide that statement from the command with a comma.")
-                prompt_parts.append("- Write notes only to give information, not instructions.")
-            elif template_type.lower() == "descriptive":
-                prompt_parts.append("- Give information gradually.")
-                prompt_parts.append("- Use key words and phrases to organize your text logically.")
-                prompt_parts.append("- Write short sentences. Use a maximum of 25 words in each sentence.")
-                prompt_parts.append("- Use paragraphs to show related information.")
-                prompt_parts.append("- Make sure that each paragraph has only one topic.")
-                prompt_parts.append("- Make sure that no paragraph has more than six sentences.")
-            elif template_type.lower() == "safety":
-                prompt_parts.append("- Use an applicable word(e.g.'warning' or 'caution') to identify the level of risk.")
-                prompt_parts.append("- Start a safety instruction with a clear and simple command or condition.")
-                prompt_parts.append("- Give an explanation to show the specific risk or possible result.")
+        # ENTEGRE EDILEN 2. YONTEM: Olmayan dosyayi beklemeden dogrudan mevcut kurallari uygula
+        if template_type.lower() == "procedure":
+            prompt_parts.append("- Write short sentences. Use a maximum of 20 words in each sentence.")
+            prompt_parts.append("- Write only one instruction in each sentence unless two or more actions occur at the same time.")
+            prompt_parts.append("- Write instructions in the imperative(command) form.")
+            prompt_parts.append("- If you start an instruction with a descriptive statement(dependent phrase or clause), divide that statement from the command with a comma.")
+            prompt_parts.append("- Write notes only to give information, not instructions.")
+        elif template_type.lower() == "descriptive":
+            prompt_parts.append("- Give information gradually.")
+            prompt_parts.append("- Use key words and phrases to organize your text logically.")
+            prompt_parts.append("- Write short sentences. Use a maximum of 25 words in each sentence.")
+            prompt_parts.append("- Use paragraphs to show related information.")
+            prompt_parts.append("- Make sure that each paragraph has only one topic.")
+            prompt_parts.append("- Make sure that no paragraph has more than six sentences.")
+        elif template_type.lower() == "safety":
+            prompt_parts.append("- Use an applicable word(e.g.'warning' or 'caution') to identify the level of risk.")
+            prompt_parts.append("- Start a safety instruction with a clear and simple command or condition.")
+            prompt_parts.append("- Give an explanation to show the specific risk or possible result.")
                 
         prompt_parts.append("</DYNAMIC_RULES>\n")
 
