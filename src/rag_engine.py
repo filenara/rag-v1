@@ -117,7 +117,7 @@ class RAGEngine:
     def _analyze_and_rewrite_query(self, query: str, history: list) -> Tuple[str, str]:
         history_text = ""
         if history:
-            for msg in history[-4:]:
+            for msg in history[-3:]:
                 role = "User" if msg.get("role") == "user" else "Assistant"
                 content = msg.get("content", "")
                 if isinstance(content, str):
@@ -178,42 +178,55 @@ class RAGEngine:
             logger.error("Sorgu analizi hatasi: %s", e, exc_info=True)
             return query, ""
 
-    def _route_intent(self, query: str, history: list) -> str:
+    def _route_intent(self, query: str, history: list, use_ste100: bool) -> str:
         history_text = ""
         if history:
-            for msg in history[-4:]:
+            for msg in history[-3:]:
                 role = "User" if msg.get("role") == "user" else "Assistant"
                 content = msg.get("content", "")
                 if isinstance(content, str):
                     history_text += f"{role}: {content}\n"
 
-        prompt = (
-            "Classify the following user message into ONE of these specific categories:\n"
-            "QA: User is asking a technical question (e.g., 'how many bolts?', 'what is X?').\n"
-            "PROCEDURE: User wants a step-by-step procedure or instruction manual written.\n"
-            "DESCRIPTIVE: User wants a descriptive text or system description written.\n"
-            "SAFETY: User wants safety instructions or warnings written.\n"
-            "REVISION: User is providing feedback on the previous answer and wants it rewritten or fixed (e.g., 'make it shorter', 'you made a mistake', 'try again').\n"
-            "CHITCHAT: User is just chatting or saying hello.\n\n"
-            "Respond ONLY with the exact category name.\n\n"
-            f"History:\n{history_text}\n"
-            f"Message: {query}\n"
-            "Category:"
-        )
+        if use_ste100:
+            prompt = (
+                "Classify the following user message into ONE of these specific categories:\n"
+                "PROCEDURE: User wants a step-by-step procedure or instruction manual written.\n"
+                "DESCRIPTIVE: User wants a descriptive text or system description written.\n"
+                "SAFETY: User wants safety instructions or warnings written.\n"
+                "REVISION: User is providing feedback on the previous answer and wants it rewritten or fixed.\n\n"
+                "Respond ONLY with the exact category name.\n\n"
+                f"History:\n{history_text}\n"
+                f"Message: {query}\n"
+                "Category:"
+            )
+            valid_intents = ["PROCEDURE", "DESCRIPTIVE", "SAFETY", "REVISION"]
+            default_intent = "PROCEDURE"
+        else:
+            prompt = (
+                "Classify the following user message into ONE of these specific categories:\n"
+                "QA: User is asking a technical question (e.g., 'how many bolts?', 'what is X?').\n"
+                "REVISION: User is providing feedback on the previous answer and wants it rewritten or fixed.\n"
+                "CHITCHAT: User is just chatting or saying hello.\n\n"
+                "Respond ONLY with the exact category name.\n\n"
+                f"History:\n{history_text}\n"
+                f"Message: {query}\n"
+                "Category:"
+            )
+            valid_intents = ["QA", "REVISION", "CHITCHAT"]
+            default_intent = "QA"
         
         messages = [{"role": "user", "content": [{"type": "text", "text": prompt}]}]
         try:
             raw_intent = self._generate_api(messages, max_tokens=10)
             intent = self._clean_output(raw_intent).upper().strip()
             
-            valid_intents = ["QA", "PROCEDURE", "DESCRIPTIVE", "SAFETY", "REVISION", "CHITCHAT"]
             for vi in valid_intents:
                 if vi in intent:
                     return vi
-            return "QA"
+            return default_intent
         except Exception as e:
             logger.error("Niyet analizi hatasi: %s", e, exc_info=True)
-            return "QA"
+            return default_intent
 
     def refine_answer(self, draft_text: str, feedback_list: list) -> str:
         logger.info("[Self-Correction] STE100 ihlalleri API uzerinden duzeltiliyor...")
@@ -269,7 +282,7 @@ class RAGEngine:
             logger.info("Tespit edilen hedef dokuman: %s", source_filter)
             
         logger.info("Niyet analizi yapiliyor...")
-        intent = self._route_intent(standalone_query, history)
+        intent = self._route_intent(standalone_query, history, use_ste100)
         logger.info("Tespit edilen niyet: %s", intent)
         
         if intent in ["PROCEDURE", "DESCRIPTIVE", "SAFETY"]:
@@ -374,7 +387,6 @@ class RAGEngine:
             if pairs:
                 scores = reranker.predict(pairs)
                 
-                # ENTEGRE EDILEN 1. YONTEM: En iyi 3 parcayi alarak baglami genisletme
                 top_indices = np.argsort(scores)[::-1][:3]
                 
                 context_texts = []
@@ -395,7 +407,7 @@ class RAGEngine:
         messages = []
         
         history_text_formatted = ""
-        for msg in history[-4:]:
+        for msg in history[-3:]:
             role_name = "User" if msg.get("role") == "user" else "Assistant"
             content_val = msg.get("content", "")
             if isinstance(content_val, str) and content_val.strip():
@@ -458,7 +470,7 @@ class RAGEngine:
         was_corrected = False
         feedback_report = []
 
-        if use_ste100 and intent == "SEARCH":
+        if use_ste100 and logical_intent == "SEARCH":
             logger.info("STE100 kurallari denetleniyor...")
             is_compliant, feedback_report = self.guard.analyze_and_report(final_text)
             
@@ -482,7 +494,7 @@ class RAGEngine:
                 was_corrected = True
 
         source_info = ""
-        if best_meta and intent == "SEARCH":
+        if best_meta and logical_intent == "SEARCH":
             src_name = os.path.basename(best_meta.get("source", "Unknown"))
             pg_num = best_meta.get("page", "?")
             source_info = f"\n\n*(Kaynak: {src_name}, Sayfa {pg_num})*"
