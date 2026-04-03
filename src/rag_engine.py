@@ -123,21 +123,11 @@ class RAGEngine:
                 if isinstance(content, str):
                     history_text += f"{role}: {content}\n"
                 
-        prompt = (
-            "You are a strict query analysis engine. Your ONLY task is to output a valid, raw JSON object.\n"
-            "Do NOT include markdown formatting, backticks, or any conversational text.\n\n"
-            "Task:\n"
-            "1. Rewrite the user query into a standalone, fully understandable question based on the history.\n"
-            "2. Extract the specific document name or file name if the user explicitly mentions one to search within. "
-            "If no document is mentioned, leave it empty.\n\n"
-            "Format:\n"
-            "{\n"
-            '  "standalone_query": "string",\n'
-            '  "source_filter": "string"\n'
-            "}\n\n"
-            f"History:\n{history_text}\n"
-            f"Latest Query: {query}\n"
+        prompt_template = self.prompts.get(
+            "query_rewrite_prompt", 
+            "Task:\n1. Rewrite the query.\nFormat:\n{{\"standalone_query\": \"string\", \"source_filter\": \"string\"}}\nHistory:\n{history_text}\nLatest Query: {query}"
         )
+        prompt = prompt_template.format(history_text=history_text, query=query)
         
         messages = [{"role": "user", "content": [{"type": "text", "text": prompt}]}]
         try:
@@ -188,34 +178,23 @@ class RAGEngine:
                     history_text += f"{role}: {content}\n"
 
         if use_ste100:
-            prompt = (
-                "Classify the following user message into ONE of these specific categories:\n"
-                "PROCEDURE: User wants a step-by-step procedure or instruction manual written.\n"
-                "DESCRIPTIVE: User wants a descriptive text or system description written.\n"
-                "SAFETY: User wants safety instructions or warnings written.\n"
-                "REVISION: User is providing feedback on the previous answer and wants it rewritten or fixed.\n\n"
-                "Respond ONLY with the exact category name.\n\n"
-                f"History:\n{history_text}\n"
-                f"Message: {query}\n"
-                "Category:"
+            prompt_template = self.prompts.get(
+                "intent_routing_ste100",
+                "Classify category.\nHistory:\n{history_text}\nMessage: {query}\nCategory:"
             )
             valid_intents = ["PROCEDURE", "DESCRIPTIVE", "SAFETY", "REVISION"]
             default_intent = "PROCEDURE"
         else:
-            prompt = (
-                "Classify the following user message into ONE of these specific categories:\n"
-                "QA: User is asking a technical question (e.g., 'how many bolts?', 'what is X?').\n"
-                "REVISION: User is providing feedback on the previous answer and wants it rewritten or fixed.\n"
-                "CHITCHAT: User is just chatting or saying hello.\n\n"
-                "Respond ONLY with the exact category name.\n\n"
-                f"History:\n{history_text}\n"
-                f"Message: {query}\n"
-                "Category:"
+            prompt_template = self.prompts.get(
+                "intent_routing_standard",
+                "Classify category.\nHistory:\n{history_text}\nMessage: {query}\nCategory:"
             )
             valid_intents = ["QA", "REVISION", "CHITCHAT"]
             default_intent = "QA"
         
+        prompt = prompt_template.format(history_text=history_text, query=query)
         messages = [{"role": "user", "content": [{"type": "text", "text": prompt}]}]
+        
         try:
             raw_intent = self._generate_api(messages, max_tokens=10)
             intent = self._clean_output(raw_intent).upper().strip()
@@ -250,14 +229,6 @@ class RAGEngine:
         except Exception as e:
             logger.error("Duzeltme sirasinda API hatasi: %s", e, exc_info=True)
             return draft_text
-
-    def _construct_system_prompt(self, use_ste100: bool = False, intent: str = "SEARCH") -> str:
-        if use_ste100 and intent == "SEARCH":
-            persona = self.prompts.get("system_persona", "You are a helpful assistant.")
-            rules = self.prompts.get("ste100_rules", "")
-            return f"{persona}\n\n---\n{rules}"
-        
-        return self.prompts.get("system_persona_standard", "You are a technical assistant.")
 
     def search_and_answer(
         self, 
@@ -418,7 +389,10 @@ class RAGEngine:
 
         if logical_intent == "REVISION":
             logger.info("Revizyon promptu hazirlaniyor...")
-            system_instruction = "You are a Senior Technical Systems Engineer. Revise the document based strictly on the user's feedback."
+            system_instruction = self.prompts.get(
+                "system_persona_revision", 
+                "You are a technical assistant. Revise the document."
+            )
             messages.append({"role": "system", "content": system_instruction})
             
             revision_template = self.prompts.get(
@@ -432,11 +406,11 @@ class RAGEngine:
         else:
             if use_ste100 and logical_intent == "SEARCH":
                 logger.info("Dinamik STE100 promptu uretiliyor. Format: %s", template_type)
-                system_instruction = self.guard.build_injection_prompt(context_text, template_type)
-                intent_instruction = f"Write the requested document strictly following ASD-STE100 rules in {template_type} format."
+                persona = self.prompts.get("system_persona", "You are a technical assistant.")
+                dynamic_rules = self.guard.build_injection_prompt(context_text, template_type)
+                system_instruction = f"{persona}\n\n{dynamic_rules}"
             else:
                 system_instruction = self.prompts.get("system_persona_standard", "You are a technical assistant.")
-                intent_instruction = "Answer the user's technical question accurately and naturally using the provided context."
 
             messages.append({"role": "system", "content": system_instruction})
             
@@ -445,7 +419,6 @@ class RAGEngine:
                 "Context Information:\n{context_text}\n\nUser Question/Request:\n{query}"
             )
             user_prompt_text = base_template.format(
-                intent_instruction=intent_instruction,
                 history_text=history_text_formatted.strip(),
                 context_text=context_text,
                 query=query
