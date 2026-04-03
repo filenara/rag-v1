@@ -106,6 +106,32 @@ self_correction_prompt: |
     Then, provide ONLY the final, fully corrected text inside <answer> tags. Do not add any conversational filler.
   </response_format>
 
+standard_revision_prompt: |
+  <system_role>Senior Technical Systems Engineer</system_role>
+  
+  <task_description>
+  Revise the following technical text based strictly on the user's feedback.
+  </task_description>
+
+  <instructions>
+    - Apply ALL corrections and modifications requested by the user.
+    - Do not enforce any specific vocabulary restrictions unless requested.
+    - Preserve all technical facts and underlying engineering meaning from the original draft.
+  </instructions>
+
+  <original_draft>
+  {draft_answer}
+  </original_draft>
+
+  <user_feedback>
+  {feedback_report}
+  </user_feedback>
+
+  <response_format>
+    First, silently analyze the feedback and plan the revision inside <thinking> tags. 
+    Then, provide ONLY the final, fully corrected text inside <answer> tags.
+  </response_format>
+
 caption_prompt: |
   <system_role>Senior Technical Data Analyst & OCR Specialist</system_role>
   

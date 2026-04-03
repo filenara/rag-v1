@@ -395,10 +395,18 @@ class RAGEngine:
             )
             messages.append({"role": "system", "content": system_instruction})
             
-            revision_template = self.prompts.get(
-                "self_correction_prompt", 
-                "Fix this:\n{draft_answer}\nErrors/Feedback:\n{feedback_report}"
-            )
+            # STE100 durumuna gore dogru duzeltme sablonunu sec
+            if use_ste100:
+                revision_template = self.prompts.get(
+                    "self_correction_prompt", 
+                    "Fix this:\n{draft_answer}\nErrors/Feedback:\n{feedback_report}"
+                )
+            else:
+                revision_template = self.prompts.get(
+                    "standard_revision_prompt", 
+                    "Fix this:\n{draft_answer}\nUser Feedback:\n{feedback_report}"
+                )
+                
             user_prompt_text = revision_template.format(
                 draft_answer=last_assistant_text,
                 feedback_report=query
