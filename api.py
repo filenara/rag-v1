@@ -1,4 +1,5 @@
 import logging
+from contextlib import asynccontextmanager
 from typing import List, Dict, Any
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
@@ -8,8 +9,16 @@ from src.rag_engine import RAGEngine
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger(__name__)
 
-app = FastAPI(title="STE100 RAG Backend API", version="1.0")
 engine = None
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    global engine
+    logger.info("FastAPI: RAG Engine baslatiliyor...")
+    engine = RAGEngine()
+    yield
+
+app = FastAPI(title="STE100 RAG Backend API", version="1.0", lifespan=lifespan)
 
 
 class QueryRequest(BaseModel):

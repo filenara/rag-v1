@@ -2,6 +2,7 @@ import logging
 import requests
 import streamlit as st
 import streamlit_authenticator as stauth
+import os
 
 from src.utils import load_config, load_secrets
 
@@ -37,6 +38,22 @@ def load_auth():
         return None
 
 authenticator = load_auth()
+is_kaggle_test = os.environ.get("KAGGLE_TEST_MODE") == "1"
+
+if is_kaggle_test:
+    name = "Kaggle Test Kullanicisi"
+    authentication_status = True
+    username = "test_user"
+elif authenticator:
+    try:
+        name, authentication_status, username = authenticator.login("main")
+    except Exception as e:
+        logger.error("Kimlik dogrulama modulu baslatilamadi: %s", e)
+        st.error("Giris sistemi su anda kullanilamiyor. Lutfen yoneticiye basvurun.")
+        name, authentication_status, username = None, None, None
+else:
+    st.error("Sistem ayarlari yuklenemedigi icin giris yapilamiyor.")
+    authentication_status = None
 
 if authenticator:
     try:

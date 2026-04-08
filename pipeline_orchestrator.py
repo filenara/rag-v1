@@ -150,8 +150,11 @@ class PipelineOrchestrator:
                         img.save(save_path)
                         
                     if page_no not in image_paths_by_page:
-                        image_paths_by_page[page_no] = save_path
+                        image_paths_by_page[page_no] = []
                         visual_summaries_by_page[page_no] = "\n[VISUAL DETECTED]:\n"
+                    
+                    if save_path not in image_paths_by_page[page_no]:
+                        image_paths_by_page[page_no].append(save_path)
                         
                     cached_caption = self.vision_cache.get(img_hash)
                     if cached_caption:
@@ -191,7 +194,7 @@ class PipelineOrchestrator:
                 
                 has_visual = page_no in visual_summaries_by_page
                 v_summary = visual_summaries_by_page.get(page_no, "")
-                i_path = image_paths_by_page.get(page_no, "")
+                i_paths = image_paths_by_page.get(page_no, [])
                 
                 final_chunk = f"--- SOURCE: {filename} | PAGE {page_no} ---\n"
                 if has_visual:
@@ -199,7 +202,7 @@ class PipelineOrchestrator:
                 final_chunk += chunk_text
                 
                 meta["has_visual"] = str(has_visual)
-                meta["image_path"] = i_path
+                meta["image_path"] = ",".join(i_paths) if i_paths else ""
                 
                 batch_chunks.append(final_chunk)
                 batch_metadatas.append(meta)

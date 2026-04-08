@@ -132,38 +132,20 @@ class RAGEngine:
         messages = [{"role": "user", "content": [{"type": "text", "text": prompt}]}]
         try:
             raw_response = self._generate_api(messages, max_tokens=200)
-            cleaned_response = self._clean_output(raw_response)
+            cleaned_response = self._clean_output(raw_response).strip()
             
-            cleaned_response = cleaned_response.strip()
-            if cleaned_response.startswith("```json"):
-                cleaned_response = cleaned_response[7:]
-            elif cleaned_response.startswith("```"):
-                cleaned_response = cleaned_response[3:]
+            json_match = re.search(r"\{.*?\}", cleaned_response, flags=re.DOTALL)
+            if json_match:
+                cleaned_response = json_match.group(0)
                 
-            if cleaned_response.endswith("```"):
-                cleaned_response = cleaned_response[:-3]
-                
-            cleaned_response = cleaned_response.strip()
-            
             try:
                 parsed = json.loads(cleaned_response)
                 standalone = parsed.get("standalone_query", query)
                 filter_val = parsed.get("source_filter", "")
                 return standalone, filter_val
             except json.JSONDecodeError:
-                json_match = re.search(r"\{.*?\}", cleaned_response, flags=re.DOTALL)
-                if json_match:
-                    try:
-                        parsed = json.loads(json_match.group(0))
-                        standalone = parsed.get("standalone_query", query)
-                        filter_val = parsed.get("source_filter", "")
-                        return standalone, filter_val
-                    except json.JSONDecodeError:
-                        logger.warning("Regex ile bulunan JSON ayristirilamadi. Ham metin kullanilacak.")
-                        return query, ""
-                else:
-                    logger.warning("JSON yapisi bulunamadi. Ham metin kullanilacak.")
-                    return query, ""
+                logger.warning("JSON yapisi ayristirilamadi. Ham metin kullanilacak.")
+                return query, ""
         except Exception as e:
             logger.error("Sorgu analizi hatasi: %s", e, exc_info=True)
             return query, ""
@@ -308,7 +290,8 @@ class RAGEngine:
                         scores_dict[doc_id] += 1 / (self.k_constant + rank)
                         
                 if self.bm25:
-                    bm25_scores = np.array(self.bm25.get_scores(standalone_query.lower().split(" ")))
+                    query_tokens = re.findall(r'\w+', standalone_query.lower())
+                    bm25_scores = np.array(self.bm25.get_scores(query_tokens))
                     if current_where and source_filter:
                         filter_lower = source_filter.lower()
                         valid_indices = []
