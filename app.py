@@ -55,17 +55,6 @@ else:
     st.error("Sistem ayarlari yuklenemedigi icin giris yapilamiyor.")
     authentication_status = None
 
-if authenticator:
-    try:
-        name, authentication_status, username = authenticator.login("main")
-    except Exception as e:
-        logger.error("Kimlik dogrulama modulu baslatilamadi: %s", e)
-        st.error("Giris sistemi su anda kullanilamiyor. Lutfen yoneticiye basvurun.")
-        name, authentication_status, username = None, None, None
-else:
-    st.error("Sistem ayarlari yuklenemedigi icin giris yapilamiyor.")
-    authentication_status = None
-
 if authentication_status:
     with st.sidebar:
         st.title("Admin Panel")
