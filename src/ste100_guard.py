@@ -27,9 +27,14 @@ class STE100Guard:
             logger.info("STE100Guard icin spaCy (en_core_web_sm) bellege aliniyor...")
             try:
                 _SPACY_MODEL = spacy.load("en_core_web_sm")
-            except OSError:
-                logger.error("spaCy 'en_core_web_sm' modeli bulunamadi.")
-                _SPACY_MODEL = None
+            except OSError as e:
+                error_msg = (
+                    "Kritik Hata: 'en_core_web_sm' modeli bulunamadi. "
+                    "STE100 denetimi yapilamaz. Lutfen terminalde su komutu calistirin: "
+                    "python -m spacy download en_core_web_sm"
+                )
+                logger.critical(error_msg)
+                raise RuntimeError(f"STE100Guard baslatilamadi: {error_msg}") from e
                 
         self.nlp = _SPACY_MODEL
 
@@ -103,7 +108,12 @@ class STE100Guard:
         return "\n".join(prompt_parts)
 
     def analyze_and_report(self, text: str) -> Tuple[bool, List[str]]:
-        if not self.nlp or not self.dictionary_rules or not text:
+        if not hasattr(self, 'nlp') or self.nlp is None:
+            error_msg = "Sistem Hatasi: NLP modeli yuklenmedigi icin analiz yapilamiyor."
+            logger.error(error_msg)
+            return False, [error_msg]
+            
+        if not self.dictionary_rules or not text:
             return True, []
 
         doc = self.nlp(text)

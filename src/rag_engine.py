@@ -114,7 +114,7 @@ class RAGEngine:
             return match.group(1).strip()
         return text
 
-    def _analyze_and_rewrite_query(self, query: str, history: list) -> Tuple[str, str]:
+    def _analyze_and_rewrite_query(self, query: str, history: list) -> str:
         history_text = ""
         if history:
             for msg in history[-3:]:
@@ -125,30 +125,40 @@ class RAGEngine:
                 
         prompt_template = self.prompts.get(
             "query_rewrite_prompt", 
-            "Task:\n1. Rewrite the query.\nFormat:\n{{\"standalone_query\": \"string\", \"source_filter\": \"string\"}}\nHistory:\n{history_text}\nLatest Query: {query}"
+            "Rewrite the query to be standalone.\nHistory:\n{history_text}\nQuery: {query}\nStandalone Query:"
         )
         prompt = prompt_template.format(history_text=history_text, query=query)
         
         messages = [{"role": "user", "content": [{"type": "text", "text": prompt}]}]
         try:
-            raw_response = self._generate_api(messages, max_tokens=200)
-            cleaned_response = self._clean_output(raw_response).strip()
-            
-            json_match = re.search(r"\{.*?\}", cleaned_response, flags=re.DOTALL)
-            if json_match:
-                cleaned_response = json_match.group(0)
-                
-            try:
-                parsed = json.loads(cleaned_response)
-                standalone = parsed.get("standalone_query", query)
-                filter_val = parsed.get("source_filter", "")
-                return standalone, filter_val
-            except json.JSONDecodeError:
-                logger.warning("JSON yapisi ayristirilamadi. Ham metin kullanilacak.")
-                return query, ""
+            raw_response = self._generate_api(messages, max_tokens=100)
+            return self._clean_output(raw_response).strip()
         except Exception as e:
             logger.error("Sorgu analizi hatasi: %s", e, exc_info=True)
-            return query, ""
+            return query
+
+    def _expand_revision_query(self, query: str, history: list) -> str:
+        history_text = ""
+        if history:
+            for msg in history[-6:]:
+                role = "User" if msg.get("role") == "user" else "Assistant"
+                content = msg.get("content", "")
+                if isinstance(content, str):
+                    history_text += f"{role}: {content}\n"
+                    
+        prompt_template = self.prompts.get(
+            "revision_expansion_prompt", 
+            "Find root query from history and merge with feedback.\nHistory:\n{history_text}\nFeedback: {query}\nMerged:"
+        )
+        prompt = prompt_template.format(history_text=history_text, query=query)
+        
+        messages = [{"role": "user", "content": [{"type": "text", "text": prompt}]}]
+        try:
+            raw_response = self._generate_api(messages, max_tokens=150)
+            return self._clean_output(raw_response).strip()
+        except Exception as e:
+            logger.error("Kok sorgu cikarimi hatasi: %s", e, exc_info=True)
+            return query
 
     def _route_intent(self, query: str, history: list, use_ste100: bool) -> str:
         history_text = ""
@@ -189,16 +199,20 @@ class RAGEngine:
             logger.error("Niyet analizi hatasi: %s", e, exc_info=True)
             return default_intent
 
-    def refine_answer(self, draft_text: str, feedback_list: list) -> str:
-        logger.info("[Self-Correction] STE100 ihlalleri API uzerinden duzeltiliyor...")
+    def refine_answer(self, draft_text: str, feedback_list: list, context_text: str, core_rules: list) -> str:
+        logger.info("[Self-Correction] STE100 ihlalleri dinamik baglam ve kurallarla duzeltiliyor...")
         
         feedback_str = "\n".join(feedback_list)
+        rules_str = "\n".join([f"- {r}" for r in core_rules])
+        
         template = self.prompts.get(
             "self_correction_prompt",
-            "Fix this:\n{draft_answer}\nErrors:\n{feedback_report}"
+            "Fix the errors in the draft using the context and rules.\nContext:\n{context_text}\nRules:\n{core_rules}\nDraft:\n{draft_answer}\nErrors:\n{feedback_report}\nFixed Text:"
         )
         
         prompt_text = template.format(
+            context_text=context_text,
+            core_rules=rules_str,
             draft_answer=draft_text,
             feedback_report=feedback_str
         )
@@ -228,45 +242,65 @@ class RAGEngine:
         embedder = self.llm_manager.load_embedder()
         reranker = self.llm_manager.load_reranker()
         
-        logger.info("Sorgu baglam ve metaveri tespiti icin analiz ediliyor...")
-        standalone_query, source_filter = self._analyze_and_rewrite_query(query, history)
-        logger.info("Yeniden yazilan sorgu: %s", standalone_query)
-        if source_filter:
-            logger.info("Tespit edilen hedef dokuman: %s", source_filter)
-            
-        logger.info("Niyet analizi yapiliyor...")
-        intent = self._route_intent(standalone_query, history, use_ste100)
-        logger.info("Tespit edilen niyet: %s", intent)
+        # 1. Regex ile Slash Command Tespiti ve Guvenlik Kontrolu
+        slash_match = re.search(r'(?:^|\s)/([\w.-]+)', query)
+        source_filter = ""
         
-        if intent in ["PROCEDURE", "DESCRIPTIVE", "SAFETY"]:
-            use_ste100 = True
-            template_type = intent.capitalize()
+        if slash_match:
+            potential_source = slash_match.group(1).lower()
+            matched_source = None
+            
+            for src_key in self.source_to_indices.keys():
+                if potential_source in src_key:
+                    matched_source = potential_source
+                    break
+                    
+            if matched_source:
+                source_filter = matched_source
+                logger.info("Gecerli slash command tespit edildi. Filtre: %s", source_filter)
+            else:
+                logger.warning("Gecersiz slash command tespit edildi (%s), yok sayiliyor.", potential_source)
+                
+            # Sorguyu anlamsal gurultuden temizle
+            query = re.sub(r'(?:^|\s)/[\w.-]+', '', query).strip()
+
+        # 2. Intent Tespiti ve Arayuz Ezmesi (Override)
+        explicit_template = str(template_type).strip().capitalize()
+        
+        if use_ste100 and explicit_template in ["Procedure", "Descriptive", "Safety"]:
+            intent = explicit_template.upper()
+            logger.info("Arayuzden secilen format (Explicit Intent) uygulaniyor: %s", intent)
+        else:
+            logger.info("Niyet analizi yapiliyor...")
+            intent = self._route_intent(query, history, use_ste100)
+            logger.info("Tespit edilen niyet: %s", intent)
+
+        # 3. Revizyon Mantigi ve Akis Yonlendirmesi
+        if intent == "REVISION":
+            logger.info("Revizyon algilandi. Kok sorgu cikarimi yapiliyor...")
+            standalone_query = self._expand_revision_query(query, history)
             logical_intent = "SEARCH"
-        elif intent == "QA":
+            template_type = explicit_template if explicit_template != "General" else "Procedure"
+        elif intent in ["PROCEDURE", "DESCRIPTIVE", "SAFETY", "QA"]:
             logical_intent = "SEARCH"
-        elif intent == "REVISION":
-            logical_intent = "REVISION"
+            template_type = explicit_template if use_ste100 else "General"
+            standalone_query = self._analyze_and_rewrite_query(query, history)
         else:
             logical_intent = "CHAT"
+            standalone_query = query
             
         context_text = ""
         best_meta = {}
         input_image = None
-        last_assistant_text = ""
         
-        if (logical_intent in ["CHAT", "REVISION"]) and history:
-            logger.info("Arama atlandi. Onceki baglam ve metin yukleniyor...")
+        if logical_intent == "CHAT" and history:
+            logger.info("Arama atlandi. Onceki baglam yukleniyor...")
             for turn in reversed(history):
                 if turn.get("role") == "assistant":
                     context_text = turn.get("context_text", "")
-                    last_assistant_text = turn.get("content", "")
                     break
-            
-            if not last_assistant_text and logical_intent == "REVISION":
-                logger.warning("Gecmis asistan metni bulunamadi. QA moduna donuluyor.")
-                logical_intent = "SEARCH"
         
-        if logical_intent == "SEARCH" or not history:
+        if logical_intent == "SEARCH":
             col = self.db.get_collection(collection_name)
             doc_scores = {}
             q_vec = embedder.encode([standalone_query], normalize_embeddings=True)
@@ -292,6 +326,7 @@ class RAGEngine:
                 if self.bm25:
                     query_tokens = re.findall(r'\w+', standalone_query.lower())
                     bm25_scores = np.array(self.bm25.get_scores(query_tokens))
+                    
                     if current_where and source_filter:
                         filter_lower = source_filter.lower()
                         valid_indices = []
@@ -299,10 +334,12 @@ class RAGEngine:
                             if filter_lower in src:
                                 valid_indices.extend(indices)
                         
-                        mask = np.ones(len(bm25_scores), dtype=bool)
+                        # Eger gecerli indeks bulunamadiysa maskeleme yapmiyoruz
+                        # (Guvenlik adimi geregi buraya girmemesi beklenir ama cift dikis iyidir)
                         if valid_indices:
+                            mask = np.ones(len(bm25_scores), dtype=bool)
                             mask[valid_indices] = False
-                        bm25_scores[mask] = -1.0
+                            bm25_scores[mask] = -1.0
                                 
                     top_bm25_indices = np.argsort(bm25_scores)[::-1]
                     rank = 0
@@ -370,50 +407,27 @@ class RAGEngine:
         if not history_text_formatted.strip():
             history_text_formatted = "No previous conversation."
 
-        if logical_intent == "REVISION":
-            logger.info("Revizyon promptu hazirlaniyor...")
-            system_instruction = self.prompts.get(
-                "system_persona_revision", 
-                "You are a technical assistant. Revise the document."
-            )
-            messages.append({"role": "system", "content": system_instruction})
-            
-            # STE100 durumuna gore dogru duzeltme sablonunu sec
-            if use_ste100:
-                revision_template = self.prompts.get(
-                    "self_correction_prompt", 
-                    "Fix this:\n{draft_answer}\nErrors/Feedback:\n{feedback_report}"
-                )
-            else:
-                revision_template = self.prompts.get(
-                    "standard_revision_prompt", 
-                    "Fix this:\n{draft_answer}\nUser Feedback:\n{feedback_report}"
-                )
-                
-            user_prompt_text = revision_template.format(
-                draft_answer=last_assistant_text,
-                feedback_report=query
-            )
+        if use_ste100 and logical_intent == "SEARCH":
+            logger.info("Dinamik STE100 promptu uretiliyor. Format: %s", template_type)
+            persona = self.prompts.get("system_persona", "You are a technical assistant.")
+            dynamic_rules = self.guard.build_injection_prompt(context_text, template_type)
+            system_instruction = f"{persona}\n\n{dynamic_rules}"
         else:
-            if use_ste100 and logical_intent == "SEARCH":
-                logger.info("Dinamik STE100 promptu uretiliyor. Format: %s", template_type)
-                persona = self.prompts.get("system_persona", "You are a technical assistant.")
-                dynamic_rules = self.guard.build_injection_prompt(context_text, template_type)
-                system_instruction = f"{persona}\n\n{dynamic_rules}"
-            else:
-                system_instruction = self.prompts.get("system_persona_standard", "You are a technical assistant.")
+            system_instruction = self.prompts.get("system_persona_standard", "You are a technical assistant.")
 
-            messages.append({"role": "system", "content": system_instruction})
-            
-            base_template = self.prompts.get(
-                "response_template", 
-                "Context Information:\n{context_text}\n\nUser Question/Request:\n{query}"
-            )
-            user_prompt_text = base_template.format(
-                history_text=history_text_formatted.strip(),
-                context_text=context_text,
-                query=query
-            )
+        messages.append({"role": "system", "content": system_instruction})
+        
+        base_template = self.prompts.get(
+            "response_template", 
+            "Context Information:\n{context_text}\n\nUser Question/Request:\n{query}"
+        )
+        
+        # Orijinal temizlenmis query ile yanit uretimi yapilir
+        user_prompt_text = base_template.format(
+            history_text=history_text_formatted.strip(),
+            context_text=context_text,
+            query=query
+        )
 
         user_content = []
         if input_image:
@@ -447,7 +461,14 @@ class RAGEngine:
                     retries += 1
                     logger.info("Ihlaller duzeltiliyor... (Deneme %s/%s)", retries, max_retries)
                     previous_text = current_text
-                    current_text = self.refine_answer(current_text, feedback_report)
+                    
+                    # refine_answer fonksiyonunun yeni imzasina (parametrelerine) gore guncellendi
+                    current_text = self.refine_answer(
+                        draft_text=current_text, 
+                        feedback_list=feedback_report,
+                        context_text=context_text,
+                        core_rules=self.guard.core_rules
+                    )
                     
                     if current_text.strip() == previous_text.strip():
                         break

@@ -16,15 +16,6 @@ system_persona_standard: |
     Answer clearly, professionally, and naturally. DO NOT restrict your vocabulary to STE100 rules. Provide detailed and analytical engineering explanations when necessary.
   </constraint>
 
-system_persona_revision: |
-  <role>Senior Technical Systems Engineer</role>
-  <mission>
-    Revise the text based strictly on the user's feedback.
-  </mission>
-  <constraint>
-    Do not attempt to search for new external information. Focus solely on applying the user's corrections to the previous draft.
-  </constraint>
-
 response_template: |
   <system_role>Senior Technical Systems Engineer</system_role>
 
@@ -91,7 +82,16 @@ self_correction_prompt: |
     - Use the exact "Approved Alternatives" provided in the feedback.
     - Preserve all technical measurements, component names, and spatial relationships from the original draft.
     - Do not change the underlying engineering meaning or facts.
+    - Base your corrections ONLY on the provided context and rules below.
   </instructions>
+
+  <context_data>
+  {context_text}
+  </context_data>
+
+  <core_rules>
+  {core_rules}
+  </core_rules>
 
   <original_draft>
   {draft_answer}
@@ -104,32 +104,6 @@ self_correction_prompt: |
   <response_format>
     First, silently analyze each feedback item and plan how to apply the corrections inside <thinking> tags. 
     Then, provide ONLY the final, fully corrected text inside <answer> tags. Do not add any conversational filler.
-  </response_format>
-
-standard_revision_prompt: |
-  <system_role>Senior Technical Systems Engineer</system_role>
-  
-  <task_description>
-  Revise the following technical text based strictly on the user's feedback.
-  </task_description>
-
-  <instructions>
-    - Apply ALL corrections and modifications requested by the user.
-    - Do not enforce any specific vocabulary restrictions unless requested.
-    - Preserve all technical facts and underlying engineering meaning from the original draft.
-  </instructions>
-
-  <original_draft>
-  {draft_answer}
-  </original_draft>
-
-  <user_feedback>
-  {feedback_report}
-  </user_feedback>
-
-  <response_format>
-    First, silently analyze the feedback and plan the revision inside <thinking> tags. 
-    Then, provide ONLY the final, fully corrected text inside <answer> tags.
   </response_format>
 
 caption_prompt: |
@@ -159,6 +133,7 @@ caption_prompt: |
        - Components: List all identifiable parts.
        - Connections: Describe key connections.
        - Labels: OCR all part numbers, pinouts, and annotations.
+       - Dimensions: Explicitly extract and list all visible physical measurements (height, width, depth, radius, etc.) and their specific units (e.g., mm, inches).
        
     5. IF PHOTOGRAPH:
        - Subject: Describe the equipment/part shown.
@@ -167,7 +142,8 @@ caption_prompt: |
   </extraction_guidelines>
 
   <constraints>
-  Output ONLY factual data about the image. Do not use conversational filler.
+    1. Hierarchy of Truth: If the image resolution is low or text is ambiguous, do NOT guess. NEVER invent or hallucinate part numbers, IDs, tolerances, or measurements. Rely strictly on clearly legible pixels.
+    2. Output ONLY factual data about the image. Do not use conversational filler.
   </constraints>
 
   <reference_text>
@@ -180,22 +156,26 @@ caption_prompt: |
   </response_format>
 
 query_rewrite_prompt: |
-  You are a strict query analysis engine. Your ONLY task is to output a valid, raw JSON object.
-  Do NOT include markdown formatting, backticks, or any conversational text.
-
-  Task:
-  1. Rewrite the user query into a standalone, fully understandable question based on the history.
-  2. Extract the specific document name or file name if the user explicitly mentions one to search within. If no document is mentioned, leave it empty.
-
-  Format:
-  {{
-    "standalone_query": "string",
-    "source_filter": "string"
-  }}
+  You are a strict query analysis engine.
+  Rewrite the user query into a standalone, fully understandable question based on the history.
+  Do NOT include markdown formatting or conversational text. Output ONLY the rewritten query.
 
   History:
   {history_text}
   Latest Query: {query}
+  Standalone Query:
+
+revision_expansion_prompt: |
+  You are a strict query analysis engine.
+  The user is providing feedback or a revision request on a previous answer.
+  Analyze the history to find the original, unresolved technical question (the root query).
+  Merge this root query with the user's latest feedback to create a single, clear, comprehensive search query.
+  Ignore closed topics or unrelated past questions. Output ONLY the merged query.
+
+  History:
+  {history_text}
+  Latest Feedback: {query}
+  Merged Query:
 
 intent_routing_ste100: |
   Classify the following user message into ONE of these specific categories:

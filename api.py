@@ -29,14 +29,7 @@ class QueryRequest(BaseModel):
     strict_mode: bool = False
     template_type: str = "General"
 
-
-@app.on_event("startup")
-def startup_event() -> None:
-    global engine
-    logger.info("FastAPI: RAG Engine baslatiliyor...")
-    engine = RAGEngine()
-
-
+    
 @app.post("/ask")
 def ask_question(req: QueryRequest) -> Dict[str, Any]:
     if not engine:
