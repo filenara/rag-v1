@@ -157,7 +157,7 @@ caption_prompt: |
 
 query_rewrite_prompt: |
   You are a strict query analysis engine.
-  Rewrite the user query into a standalone, fully understandable question based on the history.
+  Rewrite the user query into a standalone, fully understandable question IN ENGLISH based on the history.
   Do NOT include markdown formatting or conversational text. Output ONLY the rewritten query.
 
   History:
