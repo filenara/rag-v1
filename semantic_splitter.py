@@ -6,45 +6,64 @@ logger = logging.getLogger(__name__)
 
 
 class STE100SemanticSplitter:
-    def __init__(self, max_chunk_length: int = 1500, **kwargs):
+    def __init__(self, max_chunk_length: int = 1500, chunk_overlap: int = 200, **kwargs):
         self.max_chunk_length = max_chunk_length
+        self.chunk_overlap = chunk_overlap
         logger.info("Docling HierarchicalChunker baslatiliyor...")
         self.chunker = HierarchicalChunker()
 
     def extract_semantic_chunks(self, document: Any, source_name: str = "Unknown") -> List[Dict[str, Any]]:
-        logger.info("Dokuman hiyerarsik ve eleman bazli izole ediliyor (Tekillestirme aktif)...")
+        logger.info("Dokuman hiyerarsik ve eleman bazli izole ediliyor (Sizinti onleme aktif)...")
         chunks = []
         
         try:
             doc_chunks = list(self.chunker.chunk(document))
             
             current_text_buffer = []
+            current_length = 0
             overlap_buffer = ""
             last_page_no = 0
             parent_context = ""
             processed_visuals = set()
             
-            def flush_text_buffer():
-                nonlocal overlap_buffer
+            def flush_text_buffer(force_clear_overlap: bool = False):
+                nonlocal overlap_buffer, current_length, current_text_buffer
                 
-                if current_text_buffer:
-                    if len(current_text_buffer) == 1 and current_text_buffer[0] == overlap_buffer:
-                        return
-                        
-                    metadata = {
-                        "source": source_name,
-                        "parent_context": parent_context,
-                        "page": last_page_no
-                    }
+                if not current_text_buffer:
+                    return
+
+                combined_text = "\n".join(current_text_buffer).strip()
+                
+                # Sadece overlap_buffer'dan ibaret olan bos chunk'lari engelle
+                if combined_text == overlap_buffer.strip() and not force_clear_overlap:
+                    return
                     
-                    chunks.append({
-                        "text": "\n".join(current_text_buffer),
-                        "metadata": metadata
-                    })
+                metadata = {
+                    "source": source_name,
+                    "parent_context": parent_context,
+                    "page": last_page_no
+                }
+                
+                chunks.append({
+                    "text": combined_text,
+                    "metadata": metadata
+                })
+                
+                # Yeni overlap uret veya tamamen temizle
+                if force_clear_overlap:
+                    overlap_buffer = ""
+                else:
+                    if len(combined_text) > self.chunk_overlap:
+                        overlap_buffer = combined_text[-self.chunk_overlap:]
+                    else:
+                        overlap_buffer = combined_text
                     
-                    overlap_buffer = current_text_buffer[-1]
-                    current_text_buffer.clear()
-                    current_text_buffer.append(overlap_buffer)
+                current_text_buffer.clear()
+                current_length = 0
+                
+                if overlap_buffer and not force_clear_overlap:
+                    current_text_buffer.append(f"... {overlap_buffer}")
+                    current_length = len(current_text_buffer[0])
 
             for chunk in doc_chunks:
                 if not hasattr(chunk.meta, "doc_items") or not chunk.meta.doc_items:
@@ -53,8 +72,9 @@ class STE100SemanticSplitter:
                 headings = chunk.meta.headings if hasattr(chunk.meta, "headings") and chunk.meta.headings else []
                 new_parent_context = " > ".join(headings)
                 
+                # Baslik degistiginde sızıntıyı onlemek icin zorla temizle
                 if new_parent_context != parent_context:
-                    flush_text_buffer()
+                    flush_text_buffer(force_clear_overlap=True)
                     parent_context = new_parent_context
                 
                 for item in chunk.meta.doc_items:
@@ -85,16 +105,18 @@ class STE100SemanticSplitter:
                                 continue
                             processed_visuals.add(visual_identifier)
 
-                        flush_text_buffer()
+                        # Gorsel oncesi metni kapat ve sızıntıyı kes
+                        flush_text_buffer(force_clear_overlap=True)
                         text_content = item.text.strip() if hasattr(item, "text") and item.text else ""
                         
                         if not text_content:
                             text_content = "[Gorsel Icerik]"
                             
+                        metadata["has_visual"] = "True"
                         if hasattr(item, "image") and hasattr(item.image, "uri") and item.image.uri:
                             metadata["image_path"] = item.image.uri
                         else:
-                            metadata["has_visual"] = "True"
+                            metadata["image_path"] = ""
                             
                         chunks.append({
                             "text": text_content,
@@ -102,7 +124,8 @@ class STE100SemanticSplitter:
                         })
                         
                     elif item_type == "TableItem":
-                        flush_text_buffer()
+                        # Tablo oncesi metni kapat ve sızıntıyı kes
+                        flush_text_buffer(force_clear_overlap=True)
                         if hasattr(item, "export_to_markdown"):
                             text_content = item.export_to_markdown()
                         else:
@@ -117,9 +140,14 @@ class STE100SemanticSplitter:
                     elif item_type in ["TextItem", "SectionHeaderItem", "ListItem"]:
                         text_val = item.text.strip() if hasattr(item, "text") and item.text else ""
                         if text_val:
+                            # Uzunluk kontrolu ve parcalama
+                            if current_length + len(text_val) > self.max_chunk_length:
+                                flush_text_buffer()
+                                
                             current_text_buffer.append(text_val)
+                            current_length += len(text_val)
                             
-            current_text_buffer.clear()
+            flush_text_buffer(force_clear_overlap=True)
             
             logger.info("Toplam %d adet izole edilmis parca olusturuldu.", len(chunks))
             return chunks
