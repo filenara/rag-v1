@@ -12,7 +12,7 @@ class STE100SemanticSplitter:
         self.chunker = HierarchicalChunker()
 
     def extract_semantic_chunks(self, document: Any, source_name: str = "Unknown") -> List[Dict[str, Any]]:
-        logger.info("Dokuman hiyerarsik ve eleman bazli izole ediliyor (Örtüşme aktif)...")
+        logger.info("Dokuman hiyerarsik ve eleman bazli izole ediliyor (Tekillestirme aktif)...")
         chunks = []
         
         try:
@@ -22,6 +22,7 @@ class STE100SemanticSplitter:
             overlap_buffer = ""
             last_page_no = 0
             parent_context = ""
+            processed_visuals = set()
             
             def flush_text_buffer():
                 nonlocal overlap_buffer
@@ -71,6 +72,19 @@ class STE100SemanticSplitter:
                     }
                     
                     if item_type == "PictureItem":
+                        visual_identifier = None
+                        if hasattr(item, "image") and hasattr(item.image, "uri") and item.image.uri:
+                            visual_identifier = item.image.uri
+                        else:
+                            temp_text = item.text.strip() if hasattr(item, "text") and item.text else ""
+                            if temp_text:
+                                visual_identifier = hash(temp_text)
+                                
+                        if visual_identifier:
+                            if visual_identifier in processed_visuals:
+                                continue
+                            processed_visuals.add(visual_identifier)
+
                         flush_text_buffer()
                         text_content = item.text.strip() if hasattr(item, "text") and item.text else ""
                         
