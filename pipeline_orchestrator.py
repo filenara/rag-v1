@@ -192,17 +192,21 @@ class PipelineOrchestrator:
                 meta = chunk_dict.get("metadata", {})
                 page_no = meta.get("page", 0)
                 
-                has_visual = page_no in visual_summaries_by_page
-                v_summary = visual_summaries_by_page.get(page_no, "")
-                i_paths = image_paths_by_page.get(page_no, [])
+                # Sadece splitter'in belirttigi gorsel tabanli parcalari tespit et
+                is_visual_chunk = meta.get("has_visual") == "True" or "image_path" in meta
                 
                 final_chunk = f"--- SOURCE: {filename} | PAGE {page_no} ---\n"
-                if has_visual:
-                    final_chunk += v_summary
-                final_chunk += chunk_text
                 
-                meta["has_visual"] = str(has_visual)
-                meta["image_path"] = ",".join(i_paths) if i_paths else ""
+                if is_visual_chunk and page_no in visual_summaries_by_page:
+                    final_chunk += visual_summaries_by_page[page_no]
+                    i_paths = image_paths_by_page.get(page_no, [])
+                    meta["image_path"] = ",".join(i_paths) if i_paths else ""
+                    meta["has_visual"] = "True"
+                else:
+                    meta["image_path"] = ""
+                    meta["has_visual"] = "False"
+                
+                final_chunk += chunk_text
                 
                 batch_chunks.append(final_chunk)
                 batch_metadatas.append(meta)
