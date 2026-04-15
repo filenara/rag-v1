@@ -1,3 +1,5 @@
+import os
+import shutil
 import logging
 from contextlib import asynccontextmanager
 from typing import List, Dict, Any
@@ -14,12 +16,30 @@ engine = None
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global engine
+    
+    # --- KAGGLE DATASET BYPASS EKLENTİSİ ---
+    # BURAYA KAGGLE'DA OLUSTURDUGUN DATASETIN YOLUNU YAZ
+    kaggle_input_path = "/kaggle/input/senin-olusturdugun-dataset-adi" 
+    local_data_path = "data" # Kodunun verileri bekledigi yerel klasor
+    
+    if os.path.exists(kaggle_input_path):
+        logger.info("Kaggle Dataset bulundu. Gecici calisma alanina (working) kopyalaniyor...")
+        os.makedirs(local_data_path, exist_ok=True)
+        for item in os.listdir(kaggle_input_path):
+            s = os.path.join(kaggle_input_path, item)
+            d = os.path.join(local_data_path, item)
+            if os.path.isdir(s):
+                shutil.copytree(s, d, dirs_exist_ok=True)
+            else:
+                shutil.copy2(s, d)
+        logger.info("Veritabani kopyalamasi tamamlandi. Read-only engeli asildi!")
+    # ---------------------------------------
+
     logger.info("FastAPI: RAG Engine baslatiliyor...")
     engine = RAGEngine()
     yield
 
 app = FastAPI(title="STE100 RAG Backend API", version="1.0", lifespan=lifespan)
-
 
 class QueryRequest(BaseModel):
     query: str
