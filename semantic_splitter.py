@@ -12,35 +12,49 @@ class STE100SemanticSplitter:
         self.chunker = HierarchicalChunker()
 
     def extract_semantic_chunks(self, document: Any, source_name: str = "Unknown") -> List[Dict[str, Any]]:
-        logger.info("Dokuman hiyerarsik ve eleman bazli izole ediliyor...")
+        logger.info("Dokuman hiyerarsik ve eleman bazli izole ediliyor (Örtüşme aktif)...")
         chunks = []
         
         try:
             doc_chunks = list(self.chunker.chunk(document))
             
+            current_text_buffer = []
+            overlap_buffer = ""
+            last_page_no = 0
+            parent_context = ""
+            
+            def flush_text_buffer():
+                nonlocal overlap_buffer
+                
+                if current_text_buffer:
+                    if len(current_text_buffer) == 1 and current_text_buffer[0] == overlap_buffer:
+                        return
+                        
+                    metadata = {
+                        "source": source_name,
+                        "parent_context": parent_context,
+                        "page": last_page_no
+                    }
+                    
+                    chunks.append({
+                        "text": "\n".join(current_text_buffer),
+                        "metadata": metadata
+                    })
+                    
+                    overlap_buffer = current_text_buffer[-1]
+                    current_text_buffer.clear()
+                    current_text_buffer.append(overlap_buffer)
+
             for chunk in doc_chunks:
                 if not hasattr(chunk.meta, "doc_items") or not chunk.meta.doc_items:
                     continue
                     
                 headings = chunk.meta.headings if hasattr(chunk.meta, "headings") and chunk.meta.headings else []
-                parent_context = " > ".join(headings)
+                new_parent_context = " > ".join(headings)
                 
-                current_text_buffer = []
-                last_page_no = 0
-                
-                def flush_text_buffer():
-                    """Tampon bellekte biriken standart metinleri tek bir parca olarak disari aktarir."""
-                    if current_text_buffer:
-                        metadata = {
-                            "source": source_name,
-                            "parent_context": parent_context,
-                            "page": last_page_no
-                        }
-                        chunks.append({
-                            "text": "\n".join(current_text_buffer),
-                            "metadata": metadata
-                        })
-                        current_text_buffer.clear()
+                if new_parent_context != parent_context:
+                    flush_text_buffer()
+                    parent_context = new_parent_context
                 
                 for item in chunk.meta.doc_items:
                     item_type = type(item).__name__
@@ -91,8 +105,8 @@ class STE100SemanticSplitter:
                         if text_val:
                             current_text_buffer.append(text_val)
                             
-                flush_text_buffer()
-                
+            current_text_buffer.clear()
+            
             logger.info("Toplam %d adet izole edilmis parca olusturuldu.", len(chunks))
             return chunks
         
