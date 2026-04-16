@@ -160,7 +160,7 @@ class PipelineOrchestrator:
                     if cached_caption:
                         caption = cached_caption
                     else:
-                        safe_text = "Docling tarafindan tespit edilen teknik gorsel."
+                        safe_text = "A Technical Image." #Buraya uygun bir prompt girilecek caption olmama durumları için
                         formatted_prompt = self.caption_prompt.replace("{page_text}", safe_text)
                         
                         caption_list = self.vision.generate_captions([img], formatted_prompt)
