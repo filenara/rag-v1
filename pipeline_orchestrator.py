@@ -138,6 +138,10 @@ class PipelineOrchestrator:
                     img = pic.get_image(dl_doc)
                     if not img:
                         continue
+
+                    if img.width < 80 or img.height < 80:
+                        del img
+                        continue
                         
                     img.thumbnail((self.max_image_size, self.max_image_size), Image.Resampling.LANCZOS)
                         
