@@ -129,9 +129,7 @@ if authentication_status:
                     st.info(msg.get("context_text", "Context bulunamadi."))
 
     if prompt := st.chat_input("Teknik sorunuzu buraya yazin..."):
-        msg_data = {"role": "user", "content": prompt}
-        st.session_state.messages.append(msg_data)
-        
+        # 1. UI Güncellemesi: Soruyu hemen ekrana bas (State'e HENÜZ kaydetme)
         with st.chat_message("user"):
             st.markdown(prompt)
 
@@ -139,9 +137,8 @@ if authentication_status:
             status_container = st.status("Backend ile iletisim kuruluyor...", expanded=True)
             
             try:
-                chat_history = st.session_state.messages[:-1]
-                if len(chat_history) > 6:
-                    chat_history = chat_history[-6:]
+                # 2. History Hazırlığı: Henüz kaydedilmemiş state üzerinden son 6 mesajı al
+                chat_history = st.session_state.messages[-6:] if len(st.session_state.messages) > 6 else st.session_state.messages
                 
                 payload = {
                     "query": prompt,
@@ -195,6 +192,12 @@ if authentication_status:
                         st.caption("**Kullanilan Baglam (Context):**")
                         st.text(context_text[:1000] + "..." if len(context_text) > 1000 else context_text)
 
+                # 3. TRANSACTION BAŞARILI: Şimdi hem kullanıcı sorusunu hem asistan cevabını State'e kaydet
+                st.session_state.messages.append({
+                    "role": "user",
+                    "content": prompt
+                })
+                
                 st.session_state.messages.append({
                     "role": "assistant",
                     "content": final_text,
@@ -209,7 +212,10 @@ if authentication_status:
                 logger.error("Backend API iletisim hatasi: %s", e, exc_info=True)
                 status_container.update(label="Sunucuya Ulasilamadi", state="error")
                 st.error("Arka plan servisi (Backend) yanit vermiyor. Lutfen yoneticiye basvurun.")
+                # Burada state'e hiçbir şey eklenmediği için sohbet geçmişi güvende kalıyor.
+                
             except Exception as e:
                 logger.error("Uretim sirasinda kritik hata: %s", e, exc_info=True)
                 status_container.update(label="Sistem Hatasi", state="error")
                 st.error("Isteginizi islerken sistemsel bir sorun olustu. Lutfen daha sonra tekrar deneyin.")
+                # Aynı şekilde, hata durumunda state korunmuş oluyor.

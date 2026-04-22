@@ -2,8 +2,8 @@ streamlit
 streamlit-authenticator==0.3.2
 chromadb
 sentence-transformers
-# torch
-# torchvision
+torch
+torchvision
 numpy
 transformers
 accelerate
@@ -19,3 +19,4 @@ aiohttp
 tenacity
 spacy
 docling>=2.0.0
+fastapi

@@ -12,7 +12,7 @@ vector_db:
 
 models:
   vllm_api_url: "http://127.0.0.1:8000"
-  vision_model_name: "Qwen/Qwen2.5-VL-7B-Instruct"
+  vision_model_name: "Qwen/Qwen3-VL-4B-Instruct"
   tei_embed_url: "http://127.0.0.1:8081"
   tei_rerank_url: "http://127.0.0.1:8082"
   vision_batch_size: 4
@@ -20,6 +20,8 @@ models:
 ingestion:
   max_chunk_length: 1500
   batch_size: 32
+  max_image_size: 1024
+  clear_every_n_images: 5
 
 retrieval:
   n_results: 10

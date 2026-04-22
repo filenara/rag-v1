@@ -1,5 +1,4 @@
 import os
-import shutil
 import logging
 from contextlib import asynccontextmanager
 from typing import List, Dict, Any
@@ -13,29 +12,29 @@ logger = logging.getLogger(__name__)
 
 engine = None
 
+REQUIRED_PATHS = [
+    "chroma_db",
+    "data/vision_cache.json",
+    "data/ingest_checkpoint.json",
+    "data/bm25_cache.pkl",
+    "data/assets"
+]
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global engine
     
-    # --- KAGGLE DATASET BYPASS EKLENTİSİ ---
-    # BURAYA KAGGLE'DA OLUSTURDUGUN DATASETIN YOLUNU YAZ
-    kaggle_input_path = "/kaggle/input/senin-olusturdugun-dataset-adi" 
-    local_data_path = "data" # Kodunun verileri bekledigi yerel klasor
+    missing_paths = [path for path in REQUIRED_PATHS if not os.path.exists(path)]
     
-    if os.path.exists(kaggle_input_path):
-        logger.info("Kaggle Dataset bulundu. Gecici calisma alanina (working) kopyalaniyor...")
-        os.makedirs(local_data_path, exist_ok=True)
-        for item in os.listdir(kaggle_input_path):
-            s = os.path.join(kaggle_input_path, item)
-            d = os.path.join(local_data_path, item)
-            if os.path.isdir(s):
-                shutil.copytree(s, d, dirs_exist_ok=True)
-            else:
-                shutil.copy2(s, d)
-        logger.info("Veritabani kopyalamasi tamamlandi. Read-only engeli asildi!")
-    # ---------------------------------------
+    if missing_paths:
+        error_msg = (
+            f"Gerekli veri dosyalari veya klasorleri eksik: {', '.join(missing_paths)}. "
+            "Lutfen once ingest islemini calistirin."
+        )
+        logger.error(error_msg)
+        raise RuntimeError(error_msg)
 
-    logger.info("FastAPI: RAG Engine baslatiliyor...")
+    logger.info("Veri butunlugu dogrulandi. FastAPI: RAG Engine baslatiliyor...")
     engine = RAGEngine()
     yield
 
@@ -49,11 +48,10 @@ class QueryRequest(BaseModel):
     strict_mode: bool = False
     template_type: str = "General"
 
-    
 @app.post("/ask")
 def ask_question(req: QueryRequest) -> Dict[str, Any]:
     if not engine:
-        raise HTTPException(status_code=500, detail="Motor henüz baslatilamadi.")
+        raise HTTPException(status_code=500, detail="Motor henuz baslatilamadi.")
         
     try:
         final_text, context_text, is_compliant, was_corrected, feedback_report = engine.search_and_answer(
