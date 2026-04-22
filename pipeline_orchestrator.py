@@ -192,6 +192,11 @@ class PipelineOrchestrator:
             chunks_data = self.splitter.extract_semantic_chunks(dl_doc, filename)
             
             for chunk_dict in chunks_data:
+                meta = chunk_dict.get("metadata", {})
+                meta["has_visual"] = "False"
+                meta["image_path"] = ""
+            
+            for chunk_dict in chunks_data:
                 chunk_text = chunk_dict.get("text", "")
                 meta = chunk_dict.get("metadata", {})
                 page_no = meta.get("page", 0)
