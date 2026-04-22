@@ -24,7 +24,6 @@ class STE100SemanticSplitter:
             overlap_buffer = ""
             last_page_no = 0
             parent_context = ""
-            processed_visuals = set()
             
             def flush_text_buffer(force_clear_overlap: bool = False):
                 nonlocal overlap_buffer, current_length, current_text_buffer
@@ -34,7 +33,6 @@ class STE100SemanticSplitter:
 
                 combined_text = "\n".join(current_text_buffer).strip()
                 
-                # Sadece overlap_buffer'dan ibaret olan bos chunk'lari engelle
                 if combined_text == overlap_buffer.strip() and not force_clear_overlap:
                     return
                     
@@ -49,7 +47,6 @@ class STE100SemanticSplitter:
                     "metadata": metadata
                 })
                 
-                # Yeni overlap uret veya tamamen temizle
                 if force_clear_overlap:
                     overlap_buffer = ""
                 else:
@@ -72,7 +69,6 @@ class STE100SemanticSplitter:
                 headings = chunk.meta.headings if hasattr(chunk.meta, "headings") and chunk.meta.headings else []
                 new_parent_context = " > ".join(headings)
                 
-                # Baslik degistiginde sızıntıyı onlemek icin zorla temizle
                 if new_parent_context != parent_context:
                     flush_text_buffer(force_clear_overlap=True)
                     parent_context = new_parent_context
@@ -91,40 +87,7 @@ class STE100SemanticSplitter:
                         "page": page_no
                     }
                     
-                    if item_type == "PictureItem":
-                        visual_identifier = None
-                        if hasattr(item, "image") and hasattr(item.image, "uri") and item.image.uri:
-                            visual_identifier = item.image.uri
-                        else:
-                            temp_text = item.text.strip() if hasattr(item, "text") and item.text else ""
-                            if temp_text:
-                                visual_identifier = hash(temp_text)
-                                
-                        if visual_identifier:
-                            if visual_identifier in processed_visuals:
-                                continue
-                            processed_visuals.add(visual_identifier)
-
-                        # Gorsel oncesi metni kapat ve sızıntıyı kes
-                        flush_text_buffer(force_clear_overlap=True)
-                        text_content = item.text.strip() if hasattr(item, "text") and item.text else ""
-                        
-                        if not text_content:
-                            text_content = "[Gorsel Icerik]"
-                            
-                        metadata["has_visual"] = "True"
-                        if hasattr(item, "image") and hasattr(item.image, "uri") and item.image.uri:
-                            metadata["image_path"] = item.image.uri
-                        else:
-                            metadata["image_path"] = ""
-                            
-                        chunks.append({
-                            "text": text_content,
-                            "metadata": metadata
-                        })
-                        
-                    elif item_type == "TableItem":
-                        # Tablo oncesi metni kapat ve sızıntıyı kes
+                    if item_type == "TableItem":
                         flush_text_buffer(force_clear_overlap=True)
                         if hasattr(item, "export_to_markdown"):
                             text_content = item.export_to_markdown()
@@ -140,7 +103,6 @@ class STE100SemanticSplitter:
                     elif item_type in ["TextItem", "SectionHeaderItem", "ListItem"]:
                         text_val = item.text.strip() if hasattr(item, "text") and item.text else ""
                         if text_val:
-                            # Uzunluk kontrolu ve parcalama
                             if current_length + len(text_val) > self.max_chunk_length:
                                 flush_text_buffer()
                                 

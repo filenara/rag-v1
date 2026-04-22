@@ -128,10 +128,9 @@ class PipelineOrchestrator:
                 continue
 
             logger.info("Gorsel analizler yapiliyor: %s", filename)
-            visual_summaries_by_page = {}
-            image_paths_by_page = {}
+            images_info = []
             
-            pictures = [item for item, level in dl_doc.iterate_items() if item.label == "picture"]
+            pictures = [item for item, level in dl_doc.iterate_items() if type(item).__name__ == "PictureItem"]
             image_process_counter = 0
             
             for pic in tqdm(pictures, desc="VLM Islemleri (Resimler)"):
@@ -149,18 +148,11 @@ class PipelineOrchestrator:
                     if not os.path.exists(save_path):
                         img.save(save_path)
                         
-                    if page_no not in image_paths_by_page:
-                        image_paths_by_page[page_no] = []
-                        visual_summaries_by_page[page_no] = "\n[VISUAL DETECTED]:\n"
-                    
-                    if save_path not in image_paths_by_page[page_no]:
-                        image_paths_by_page[page_no].append(save_path)
-                        
                     cached_caption = self.vision_cache.get(img_hash)
                     if cached_caption:
                         caption = cached_caption
                     else:
-                        safe_text = "A Technical Image." #Buraya uygun bir prompt girilecek caption olmama durumları için
+                        safe_text = "A Technical Image."
                         formatted_prompt = self.caption_prompt.replace("{page_text}", safe_text)
                         
                         caption_list = self.vision.generate_captions([img], formatted_prompt)
@@ -168,8 +160,23 @@ class PipelineOrchestrator:
                         
                         self.vision_cache.set(img_hash, caption)
                         self.vision_cache.save()
+                    
+                    anchor_text = ""
+                    if hasattr(pic, "captions") and pic.captions:
+                        cap_texts = []
+                        for cap in pic.captions:
+                            if hasattr(cap, "text") and cap.text:
+                                cap_texts.append(cap.text.strip())
+                        anchor_text = " ".join(cap_texts)
                         
-                    visual_summaries_by_page[page_no] += f"- Analysis: {caption}\n"
+                    images_info.append({
+                        "page_no": page_no,
+                        "anchor_text": anchor_text,
+                        "summary": f"\n[VISUAL DETECTED]:\n- Analysis: {caption}\n",
+                        "image_path": save_path,
+                        "injected": False
+                    })
+                    
                     del img
                     
                     image_process_counter += 1
@@ -184,6 +191,43 @@ class PipelineOrchestrator:
             logger.info("Metinler bolunuyor ve indeksleniyor: %s", filename)
             chunks_data = self.splitter.extract_semantic_chunks(dl_doc, filename)
             
+            for chunk_dict in chunks_data:
+                chunk_text = chunk_dict.get("text", "")
+                meta = chunk_dict.get("metadata", {})
+                page_no = meta.get("page", 0)
+                
+                chunk_image_paths = []
+                chunk_summaries = []
+                
+                for img_info in images_info:
+                    if img_info["page_no"] == page_no and not img_info["injected"]:
+                        if img_info["anchor_text"] and img_info["anchor_text"] in chunk_text:
+                            chunk_summaries.append(img_info["summary"])
+                            chunk_image_paths.append(img_info["image_path"])
+                            img_info["injected"] = True
+                            
+                if chunk_summaries:
+                    chunk_dict["text"] = chunk_text + "".join(chunk_summaries)
+                    existing_paths = meta.get("image_path", "")
+                    all_paths = existing_paths.split(",") if existing_paths else []
+                    all_paths.extend(chunk_image_paths)
+                    meta["image_path"] = ",".join(filter(None, all_paths))
+                    meta["has_visual"] = "True"
+
+            for img_info in images_info:
+                if not img_info["injected"]:
+                    for chunk_dict in chunks_data:
+                        meta = chunk_dict.get("metadata", {})
+                        if meta.get("page", 0) == img_info["page_no"]:
+                            chunk_dict["text"] = chunk_dict.get("text", "") + img_info["summary"]
+                            existing_paths = meta.get("image_path", "")
+                            all_paths = existing_paths.split(",") if existing_paths else []
+                            all_paths.append(img_info["image_path"])
+                            meta["image_path"] = ",".join(filter(None, all_paths))
+                            meta["has_visual"] = "True"
+                            img_info["injected"] = True
+                            break
+
             batch_chunks = []
             batch_metadatas = []
             
@@ -192,22 +236,7 @@ class PipelineOrchestrator:
                 meta = chunk_dict.get("metadata", {})
                 page_no = meta.get("page", 0)
                 
-                # Sadece splitter'in belirttigi gorsel tabanli parcalari tespit et
-                is_visual_chunk = meta.get("has_visual") == "True" or "image_path" in meta
-                
-                final_chunk = f"--- SOURCE: {filename} | PAGE {page_no} ---\n"
-                
-                if is_visual_chunk and page_no in visual_summaries_by_page:
-                    final_chunk += visual_summaries_by_page[page_no]
-                    i_paths = image_paths_by_page.get(page_no, [])
-                    meta["image_path"] = ",".join(i_paths) if i_paths else ""
-                    meta["has_visual"] = "True"
-                else:
-                    meta["image_path"] = ""
-                    meta["has_visual"] = "False"
-                
-                final_chunk += chunk_text
-                
+                final_chunk = f"--- SOURCE: {filename} | PAGE {page_no} ---\n{chunk_text}"
                 batch_chunks.append(final_chunk)
                 batch_metadatas.append(meta)
 
