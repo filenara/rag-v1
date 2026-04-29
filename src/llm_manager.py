@@ -113,7 +113,7 @@ class LLMManager:
         
         self.vllm_api_url = self.model_cfg.get("vllm_api_url", "http://127.0.0.1:8000")
         self.vision_model_name = self.model_cfg.get(
-            "vision_model_name", "Qwen/Qwen3-VL-4B-Instruct"
+            "vision_model_name", "Qwen/Qwen3.5-4B"
         )
         self.tei_embed_url = self.model_cfg.get("tei_embed_url", "http://127.0.0.1:8081")
         self.tei_rerank_url = self.model_cfg.get("tei_rerank_url", "http://127.0.0.1:8082")
