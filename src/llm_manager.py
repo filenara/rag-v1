@@ -33,8 +33,18 @@ class VisionClient:
         endpoint = f"{self.base_url}/v1/chat/completions"
         
         response = requests.post(endpoint, json=payload, timeout=120)
+
         if response.status_code == 200:
-            return response.json()["choices"][0]["message"]["content"]
+            data = response.json()
+            message = data["choices"][0]["message"]
+            content = message.get("content")
+
+            if content is None:
+                raise RuntimeError(
+                    f"LLM response content is None. Full response: {data}"
+                )
+
+            return content
         
         if response.status_code >= 500 or response.status_code == 429:
             logger.warning(

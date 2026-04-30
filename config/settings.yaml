@@ -23,12 +23,13 @@ ingestion:
   max_image_size: 1024
   clear_every_n_images: 5
 
+document_parser:
+  accelerator_device: "cpu"
+  accelerator_threads: 4
+  generate_picture_images: true
+
 retrieval:
   n_results: 10
   k_constant: 60
   top_k_rerank: 5
 
-document_parser:
-  accelerator_device: "cpu"
-  accelerator_threads: 4
-  generate_picture_images: true
