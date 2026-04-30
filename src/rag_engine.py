@@ -32,6 +32,7 @@ class RAGEngine:
         self.n_results = self.retrieval_cfg.get("n_results", 10)
         self.k_constant = self.retrieval_cfg.get("k_constant", 60)
         self.top_k_rerank = self.retrieval_cfg.get("top_k_rerank", 5)
+        self.min_rerank_score = self.retrieval_cfg.get("min_rerank_score", 0.35)
 
         self.bm25: Optional[BM25Okapi] = None
         self.ids: List[str] = []
@@ -378,6 +379,23 @@ class RAGEngine:
             if pairs:
                 scores = reranker.predict(pairs)
 
+                best_score = float(np.max(scores)) if len(scores) > 0 else 0.0
+
+                if best_score < self.min_rerank_score:
+                    logger.info(
+                        "Rerank skoru esik altinda. best_score=%s, threshold=%s",
+                        best_score,
+                        self.min_rerank_score,
+                    )
+                    return (
+                        "Information not found in provided documents.",
+                        "",
+                        True,
+                        False,
+                        [],
+                        [],
+                    )
+
                 top_indices = np.argsort(scores)[::-1][:3]
 
                 context_texts = []
@@ -427,7 +445,15 @@ class RAGEngine:
                         input_image = Image.open(first_image_path)
                     except Exception as e:
                         logger.error("Resim yukleme hatasi: %s", e, exc_info=True)
-
+            else:
+                return (
+                    "Information not found in provided documents.",
+                    "",
+                    True,
+                    False,
+                    [],
+                    [],
+                )
         messages = []
         
         history_text_formatted = ""
@@ -511,12 +537,4 @@ class RAGEngine:
                 final_text = current_text
                 was_corrected = True
 
-        source_info = ""
-        if best_meta and logical_intent == "SEARCH":
-            src_name = os.path.basename(best_meta.get("source", "Unknown"))
-            pg_num = best_meta.get("page", "?")
-            source_info = f"\n\n*(Kaynak: {src_name}, Sayfa {pg_num})*"
-            if input_image:
-                source_info += " [Gorsel Analiz Yapildi]"
-
-        return final_text + source_info, context_text, is_compliant, was_corrected, feedback_report
+        return final_text, context_text, is_compliant, was_corrected, feedback_report, sources

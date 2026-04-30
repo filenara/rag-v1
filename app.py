@@ -105,6 +105,29 @@ if authentication_status:
     for msg in st.session_state.messages:
         with st.chat_message(msg["role"]):
             st.markdown(msg["content"])
+
+            sources = msg.get("sources", [])
+            if sources:
+                with st.expander("Kullanılan Kaynaklar", expanded=False):
+                    for idx, source in enumerate(sources, start=1):
+                        source_name = source.get("source", "Unknown")
+                        page_num = source.get("page", "?")
+                        parent_context = source.get("parent_context", "")
+                        has_visual = source.get("has_visual", False)
+                        rerank_score = source.get("rerank_score")
+
+                        source_line = f"{idx}. **{source_name}** — Sayfa {page_num}"
+
+                        if parent_context:
+                            source_line += f" — {parent_context}"
+
+                        if has_visual:
+                            source_line += " — Görsel içerik kullanıldı"
+
+                        if isinstance(rerank_score, (int, float)):
+                            source_line += f" — Rerank: {rerank_score:.4f}"
+
+                        st.markdown(source_line)        
             
             if msg.get("is_report", False):
                 is_compliant = msg.get("is_compliant", True)
@@ -181,9 +204,32 @@ if authentication_status:
                 is_compliant = data.get("is_compliant", True)
                 was_corrected = data.get("was_corrected", False)
                 feedback_report = data.get("feedback_report", [])
+                sources = data.get("sources", [])
                 
                 status_container.update(label="Islem Tamamlandi", state="complete", expanded=False)
                 st.markdown(final_text)
+
+                if sources:
+                    with st.expander("Kullanılan Kaynaklar", expanded=False):
+                        for idx, source in enumerate(sources, start=1):
+                            source_name = source.get("source", "Unknown")
+                            page_num = source.get("page", "?")
+                            parent_context = source.get("parent_context", "")
+                            has_visual = source.get("has_visual", False)
+                            rerank_score = source.get("rerank_score")
+
+                            source_line = f"{idx}. **{source_name}** — Sayfa {page_num}"
+
+                            if parent_context:
+                                source_line += f" — {parent_context}"
+
+                            if has_visual:
+                                source_line += " — Görsel içerik kullanıldı"
+
+                            if isinstance(rerank_score, (int, float)):
+                                source_line += f" — Rerank: {rerank_score:.4f}"
+
+                            st.markdown(source_line)
                 
                 if ste100_mode:
                     if is_compliant:
@@ -226,7 +272,8 @@ if authentication_status:
                     "is_compliant": is_compliant,
                     "was_corrected": was_corrected,
                     "feedback_report": feedback_report,
-                    "context_text": context_text
+                    "context_text": context_text,
+                    "sources": sources,
                 })
 
             except requests.exceptions.RequestException as e:

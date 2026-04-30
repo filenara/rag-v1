@@ -32,4 +32,5 @@ retrieval:
   n_results: 10
   k_constant: 60
   top_k_rerank: 5
+  min_rerank_score: 0.35
 

@@ -93,13 +93,20 @@ def ask_question(
         raise HTTPException(status_code=500, detail="Motor henuz baslatilamadi.")
         
     try:
-        final_text, context_text, is_compliant, was_corrected, feedback_report = engine.search_and_answer(
+        (
+            final_text,
+            context_text,
+            is_compliant,
+            was_corrected,
+            feedback_report,
+            sources,
+        ) = engine.search_and_answer(
             query=req.query,
             collection_name=req.collection_name,
             history=req.history,
             use_ste100=req.use_ste100,
             strict_mode=req.strict_mode,
-            template_type=req.template_type
+            template_type=req.template_type,
         )
         
         return {
@@ -107,7 +114,8 @@ def ask_question(
             "context_text": context_text,
             "is_compliant": is_compliant,
             "was_corrected": was_corrected,
-            "feedback_report": feedback_report
+            "feedback_report": feedback_report,
+            "sources": sources,
         }
     except Exception as e:
         logger.error("API isleme hatasi: %s", e, exc_info=True)
