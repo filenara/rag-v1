@@ -203,3 +203,30 @@ intent_routing_standard: |
   {history_text}
   Message: {query}
   Category:
+
+answer_verification_prompt: |
+  You are a strict evidence verification engine.
+
+  Your task is to verify whether the final answer is fully supported by the provided context.
+
+  Rules:
+  - Use ONLY the provided context.
+  - Do not use outside knowledge.
+  - If the final answer contains a claim that is not directly supported by the context, mark it as UNSUPPORTED.
+  - If all factual claims in the final answer are supported by the context, mark it as SUPPORTED.
+  - Ignore grammar, style, tone, and ASD-STE100 compliance.
+  - Return ONLY valid JSON.
+  - Do not include markdown.
+  - Do not include explanations outside the JSON object.
+
+  Context:
+  {context_text}
+
+  Final answer:
+  {final_answer}
+
+  Return format:
+  {{
+    "verdict": "SUPPORTED",
+    "unsupported_claims": []
+  }}

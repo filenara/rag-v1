@@ -32,7 +32,11 @@ class RAGEngine:
         self.n_results = self.retrieval_cfg.get("n_results", 10)
         self.k_constant = self.retrieval_cfg.get("k_constant", 60)
         self.top_k_rerank = self.retrieval_cfg.get("top_k_rerank", 5)
-        self.min_rerank_score = self.retrieval_cfg.get("min_rerank_score", 0.35)
+        self.min_rerank_score = self.retrieval_cfg.get("min_rerank_score", 0.25)
+        self.verification_cfg = self.config.get("verification", {})
+        self.verification_enabled = self.verification_cfg.get("enabled", True)
+        self.verification_mode = self.verification_cfg.get("mode", "reject")
+        self.verification_max_tokens = self.verification_cfg.get("max_tokens", 512)
 
         self.bm25: Optional[BM25Okapi] = None
         self.ids: List[str] = []
@@ -114,6 +118,23 @@ class RAGEngine:
         if match:
             return match.group(1).strip()
         return text
+    
+    def _parse_json_response(self, raw_text: str) -> dict:
+        cleaned_text = self._clean_output(raw_text).strip()
+
+        try:
+            return json.loads(cleaned_text)
+        except json.JSONDecodeError:
+            pass
+
+        start_idx = cleaned_text.find("{")
+        end_idx = cleaned_text.rfind("}")
+
+        if start_idx == -1 or end_idx == -1 or end_idx <= start_idx:
+            raise ValueError("Verifier response does not contain a valid JSON object.")
+
+        json_text = cleaned_text[start_idx:end_idx + 1]
+        return json.loads(json_text)
 
     def _analyze_and_rewrite_query(self, query: str, history: list) -> str:
         history_text = ""
@@ -226,6 +247,77 @@ class RAGEngine:
         except Exception as e:
             logger.error("Duzeltme sirasinda API hatasi: %s", e, exc_info=True)
             return draft_text
+        
+    def _verify_answer_grounding(
+        self,
+        final_answer: str,
+        context_text: str,
+    ) -> bool:
+        if not self.verification_enabled:
+            return True
+
+        if not context_text.strip():
+            return False
+
+        if not final_answer.strip():
+            return False
+
+        normalized_answer = final_answer.strip().lower()
+
+        if "information not found" in normalized_answer:
+            return True
+
+        prompt_template = self.prompts.get(
+            "answer_verification_prompt",
+            (
+                "Verify whether the final answer is fully supported by the context. "
+                "Return only valid JSON with verdict SUPPORTED or UNSUPPORTED.\n\n"
+                "Context:\n{context_text}\n\n"
+                "Final answer:\n{final_answer}\n\n"
+                "{{\"verdict\": \"SUPPORTED\", \"unsupported_claims\": []}}"
+            ),
+        )
+
+        prompt_text = prompt_template.format(
+            context_text=context_text,
+            final_answer=final_answer,
+        )
+
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "text",
+                        "text": prompt_text,
+                    }
+                ],
+            }
+        ]
+
+        try:
+            raw_response = self._generate_api(
+                messages,
+                max_tokens=self.verification_max_tokens,
+            )
+            verification_result = self._parse_json_response(raw_response)
+        except Exception as e:
+            logger.error("Answer verification failed: %s", e, exc_info=True)
+            return False
+
+        verdict = str(verification_result.get("verdict", "")).upper().strip()
+
+        if verdict == "SUPPORTED":
+            return True
+
+        unsupported_claims = verification_result.get("unsupported_claims", [])
+        logger.warning(
+            "Answer rejected by verifier. verdict=%s, unsupported_claims=%s",
+            verdict,
+            unsupported_claims,
+        )
+
+        return False
 
     def search_and_answer(
         self, 
@@ -502,6 +594,16 @@ class RAGEngine:
         except Exception as e:
             logger.error("API cagirilirken hata: %s", e, exc_info=True)
             final_text = "Cevap uretilirken yerel modelde bir hata olustu."
+
+        if logical_intent == "SEARCH" and self.verification_mode == "reject":
+            is_grounded = self._verify_answer_grounding(
+                final_answer=final_text,
+                context_text=context_text,
+            )
+
+            if not is_grounded:
+                final_text = "Information not found in provided documents."
+                sources = []
 
         is_compliant = True
         was_corrected = False

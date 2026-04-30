@@ -34,3 +34,7 @@ retrieval:
   top_k_rerank: 5
   min_rerank_score: 0.35
 
+verification:
+  enabled: true
+  mode: "reject"
+  max_tokens: 512
