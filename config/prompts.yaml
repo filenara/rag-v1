@@ -151,8 +151,8 @@ caption_prompt: |
   </reference_text>
 
   <response_format>
-    First, use <thinking> tags to silently classify the image, plan the layout (e.g., count table columns or identify main schematic zones), and cross-reference labels with the <reference_text>.
-    Then, provide your final structured image extraction inside <answer> tags.
+    Return ONLY the final structured image extraction.
+    Do not include <thinking>, <answer>, reasoning notes, hidden analysis, XML tags, or conversational filler.
   </response_format>
 
 query_rewrite_prompt: |

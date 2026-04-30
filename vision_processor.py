@@ -35,6 +35,10 @@ class VisionProcessor:
                     }
                 ]
                 caption = self.client.generate(messages, max_tokens=512)
+
+                if not caption:
+                    caption = "Gorsel analiz edilemedi."
+
                 captions.append(caption.strip())
             except Exception as e:
                 logger.error("Gorsel analizi sirasinda hata: %s", e)

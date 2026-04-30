@@ -1,15 +1,10 @@
 streamlit
 streamlit-authenticator==0.3.2
 chromadb
-sentence-transformers
-torch
-torchvision
 numpy
 transformers
 accelerate
 einops
-bitsandbytes
-peft
 rank_bm25
 qwen-vl-utils
 bcrypt
@@ -20,4 +15,7 @@ tenacity
 spacy
 docling>=2.0.0
 fastapi
+uvicorn[standard]
+requests
+PyYAML
 PyMuPDF
