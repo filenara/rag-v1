@@ -22,10 +22,13 @@ class VisionClient:
     )
     def generate(self, messages: list, max_tokens: int = 2048) -> str:
         payload = {
-            "model": self.model_name,
-            "messages": messages,
-            "max_tokens": max_tokens,
-            "temperature": 0.0
+                "model": self.model_name,
+                "messages": messages,
+                "max_tokens": max_tokens,
+                "temperature": 0.0,
+                "chat_template_kwargs": {
+                    "enable_thinking": False
+            }
         }
         endpoint = f"{self.base_url}/v1/chat/completions"
         
