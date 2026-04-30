@@ -234,7 +234,7 @@ class RAGEngine:
         use_ste100: bool = False, 
         strict_mode: bool = False,
         template_type: str = "General"
-    ) -> Tuple[str, str, bool, bool, list]:
+    ) -> Tuple[str, str, bool, bool, list, list]:
         
         if history is None:
             history = []
@@ -290,7 +290,7 @@ class RAGEngine:
             standalone_query = query
             
         context_text = ""
-        best_meta = {}
+        sources = []
         input_image = None
         
         if logical_intent == "CHAT" and history:
@@ -360,7 +360,7 @@ class RAGEngine:
             )[:self.top_k_rerank]
             
             if not sorted_candidates:
-                return "Ilgili sonuc bulunamadi.", "", True, False, []
+                return "Ilgili sonuc bulunamadi.", "", True, False, [], []
             
             valid_candidates = []
             for item in sorted_candidates:
@@ -377,21 +377,54 @@ class RAGEngine:
             
             if pairs:
                 scores = reranker.predict(pairs)
-                
+
                 top_indices = np.argsort(scores)[::-1][:3]
-                
+
                 context_texts = []
-                best_meta = valid_candidates[top_indices[0]]["meta"]
-                image_path = best_meta.get("image_path", "")
-                
+                seen_sources = set()
+                first_image_path = ""
+
                 for idx in top_indices:
-                    context_texts.append(valid_candidates[idx]["text"])
-                
+                    candidate = valid_candidates[idx]
+                    text = candidate["text"]
+                    meta = candidate["meta"]
+
+                    context_texts.append(text)
+
+                    source_name = os.path.basename(meta.get("source", "Unknown"))
+                    page_num = meta.get("page", "?")
+                    parent_context = meta.get("parent_context", "")
+                    has_visual = str(meta.get("has_visual", "False"))
+                    image_path = meta.get("image_path", "")
+
+                    source_key = (
+                        source_name,
+                        str(page_num),
+                        parent_context,
+                        image_path,
+                    )
+
+                    if source_key not in seen_sources:
+                        seen_sources.add(source_key)
+                        sources.append(
+                            {
+                                "source": source_name,
+                                "page": page_num,
+                                "parent_context": parent_context,
+                                "has_visual": has_visual.lower() == "true",
+                                "image_path": image_path,
+                                "rerank_score": float(scores[idx]),
+                            }
+                        )
+
+                    if not first_image_path and image_path:
+                        first_image_path = image_path.split(",")[0].strip()
+
                 context_text = "\n\n".join(context_texts)
 
-                if image_path and os.path.exists(image_path):
+                if first_image_path and os.path.exists(first_image_path):
                     try:
-                        input_image = Image.open(image_path)
+                        input_image = Image.open(first_image_path)
                     except Exception as e:
                         logger.error("Resim yukleme hatasi: %s", e, exc_info=True)
 

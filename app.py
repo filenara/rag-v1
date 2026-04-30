@@ -1,3 +1,7 @@
+#export RAG_API_TOKEN="dev-local-token"  UBUNTU
+#$env:RAG_API_TOKEN="dev-local-token" WINDOWS
+
+
 import logging
 import requests
 import streamlit as st
@@ -18,6 +22,7 @@ st.set_page_config(
 config = load_config()
 COLLECTION_NAME = config.get("vector_db", {}).get("collection_name", "doc_v2_asset_store")
 API_URL = config.get("app", {}).get("api_url", "http://127.0.0.1:8050/ask")
+API_TOKEN_ENV = "RAG_API_TOKEN"
 
 def load_auth():
     config_auth = load_secrets()
@@ -150,8 +155,24 @@ if authentication_status:
                 }
                 
                 status_container.write("Analiz ediliyor ve yanit uretiliyor...")
-                
-                response = requests.post(API_URL, json=payload, timeout=300)
+
+                api_token = os.environ.get(API_TOKEN_ENV, "").strip()
+
+                if not api_token:
+                    raise RuntimeError(
+                        f"{API_TOKEN_ENV} environment variable is not configured."
+                    )
+
+                headers = {
+                    "Authorization": f"Bearer {api_token}",
+                }
+
+                response = requests.post(
+                    API_URL,
+                    json=payload,
+                    headers=headers,
+                    timeout=300,
+                )
                 response.raise_for_status()
                 data = response.json()
                 

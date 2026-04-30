@@ -399,7 +399,7 @@ Chroma query OK
 After successful ingestion:
 
 ```bash
-python -m uvicorn api:app --host 0.0.0.0 --port 8050
+python -m uvicorn api:app --host 127.0.0.1 --port 8050
 ```
 
 API docs:
@@ -430,6 +430,16 @@ Status: 200
 final_text: generated answer
 context_text: retrieved document fragments
 ```
+
+### Local Binding Note
+
+For local development, services bind to `127.0.0.1` by default.
+This keeps the model, embedding, reranker, and backend services reachable only
+from the local machine.
+
+Use `0.0.0.0` only when a service must be reachable from another machine,
+and only behind network-level protection such as a firewall, VPN, or reverse proxy.
+
 
 ---
 
@@ -470,7 +480,7 @@ python scripts/reset_index.py
 python pipeline_orchestrator.py
 
 # 6. Start backend API
-python -m uvicorn api:app --host 0.0.0.0 --port 8050
+python -m uvicorn api:app --host 127.0.0.1 --port 8050
 
 # 7. Start UI
 streamlit run app.py
@@ -507,7 +517,7 @@ bash scripts/start_services.sh
 python scripts/reset_index.py
 python pipeline_orchestrator.py
 
-python -m uvicorn api:app --host 0.0.0.0 --port 8050
+python -m uvicorn api:app --host 127.0.0.1 --port 8050
 ```
 
 In notebooks, long-running services are usually started through `subprocess.Popen` instead of blocking shell commands.
