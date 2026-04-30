@@ -20,3 +20,4 @@ tenacity
 spacy
 docling>=2.0.0
 fastapi
+PyMuPDF

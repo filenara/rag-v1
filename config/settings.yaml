@@ -27,3 +27,8 @@ retrieval:
   n_results: 10
   k_constant: 60
   top_k_rerank: 5
+
+document_parser:
+  accelerator_device: "cpu"
+  accelerator_threads: 4
+  generate_picture_images: true
