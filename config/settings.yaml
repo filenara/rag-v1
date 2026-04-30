@@ -15,6 +15,8 @@ models:
   vision_model_name: "Qwen/Qwen3.5-4B"
   tei_embed_url: "http://127.0.0.1:8081"
   tei_rerank_url: "http://127.0.0.1:8082"
+  embedding_model_name: "BAAI/bge-m3"
+  embedding_dimension: 1024
   vision_batch_size: 4
 
 ingestion:

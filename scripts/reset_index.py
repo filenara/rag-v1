@@ -93,6 +93,7 @@ def reset_index(
 
     vision_cache_path = Path("data/vision_cache.json")
     checkpoint_path = Path("data/ingest_checkpoint.json")
+    manifest_path = Path("data/ingest_manifest.json")
     assets_path = Path("data/assets")
 
     logger.info("Resetting RAG index artifacts.")
@@ -108,6 +109,7 @@ def reset_index(
         persist_path,
         bm25_cache_path,
         checkpoint_path,
+        manifest_path,
     ]
 
     if not keep_vision_cache:

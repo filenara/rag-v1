@@ -3,9 +3,11 @@ import gc
 import json
 import hashlib
 import logging
+from datetime import datetime, timezone
+from typing import Dict, List, Set
+
 import torch
 from tqdm import tqdm
-from typing import List, Set, Dict
 from PIL import Image
 
 from src.utils import load_prompts, load_config
@@ -21,6 +23,48 @@ logger = logging.getLogger(__name__)
 def get_image_hash(image: Image.Image) -> str:
     return hashlib.md5(image.tobytes()).hexdigest()
 
+def get_file_hash(file_path: str) -> str:
+    sha256_hash = hashlib.sha256()
+
+    with open(file_path, "rb") as file:
+        for block in iter(lambda: file.read(1024 * 1024), b""):
+            sha256_hash.update(block)
+
+    return sha256_hash.hexdigest()
+
+
+def get_text_hash(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def get_utc_timestamp() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def build_ingestion_signature(
+    document_hash: str,
+    collection_name: str,
+    embedding_model: str,
+    embedding_dimension: int,
+    chunker: str,
+    max_chunk_length: int,
+) -> str:
+    signature_payload = {
+        "document_hash": document_hash,
+        "collection_name": collection_name,
+        "embedding_model": embedding_model,
+        "embedding_dimension": int(embedding_dimension),
+        "chunker": chunker,
+        "max_chunk_length": int(max_chunk_length),
+    }
+
+    serialized_payload = json.dumps(
+        signature_payload,
+        sort_keys=True,
+        ensure_ascii=False,
+    )
+
+    return hashlib.sha256(serialized_payload.encode("utf-8")).hexdigest()
 
 class VisionCacheManager:
     def __init__(self, filepath: str = "data/vision_cache.json"):
@@ -65,29 +109,178 @@ class CheckpointManager:
     def _load(self) -> Set[str]:
         if os.path.exists(self.filepath):
             try:
-                with open(self.filepath, 'r', encoding='utf-8') as f:
-                    return set(json.load(f))
+                with open(self.filepath, "r", encoding="utf-8") as file:
+                    data = json.load(file)
+
+                if isinstance(data, list):
+                    return set(str(item) for item in data)
+
+                return set()
             except Exception:
                 return set()
+
         return set()
 
-    def mark_as_done(self, filename: str) -> None:
-        self.processed.add(filename)
+    def _make_key(self, filename: str, ingestion_signature: str) -> str:
+        return f"{filename}::{ingestion_signature}"
+
+    def save(self) -> None:
         try:
             dir_name = os.path.dirname(self.filepath)
             if dir_name:
                 os.makedirs(dir_name, exist_ok=True)
-                
+
             tmp_filepath = f"{self.filepath}.tmp"
-            with open(tmp_filepath, 'w', encoding='utf-8') as f:
-                json.dump(list(self.processed), f, ensure_ascii=False, indent=4)
+            with open(tmp_filepath, "w", encoding="utf-8") as file:
+                json.dump(
+                    sorted(self.processed),
+                    file,
+                    ensure_ascii=False,
+                    indent=4,
+                )
+
             os.replace(tmp_filepath, self.filepath)
         except Exception as e:
             logger.error("Checkpoint kaydetme hatasi: %s", e, exc_info=True)
 
-    def is_processed(self, filename: str) -> bool:
-        return filename in self.processed
+    def mark_as_done(self, filename: str, ingestion_signature: str) -> None:
+        checkpoint_key = self._make_key(filename, ingestion_signature)
+        self.processed.add(checkpoint_key)
+        self.save()
 
+    def is_processed(self, filename: str, ingestion_signature: str) -> bool:
+        checkpoint_key = self._make_key(filename, ingestion_signature)
+        return checkpoint_key in self.processed
+
+    def remove_by_filename(self, filename: str) -> None:
+        prefix = f"{filename}::"
+        self.processed = {
+            item for item in self.processed
+            if not item.startswith(prefix)
+        }
+        self.save()
+    def __init__(self, filepath: str = "data/ingest_checkpoint.json"):
+        self.filepath = filepath
+        self.processed: Set[str] = self._load()
+
+    def _load(self) -> Set[str]:
+        if os.path.exists(self.filepath):
+            try:
+                with open(self.filepath, "r", encoding="utf-8") as file:
+                    data = json.load(file)
+
+                if isinstance(data, list):
+                    return set(str(item) for item in data)
+
+                return set()
+            except Exception:
+                return set()
+
+        return set()
+
+    def _make_key(self, filename: str, document_hash: str) -> str:
+        return f"{filename}::{document_hash}"
+
+    def mark_as_done(self, filename: str, document_hash: str) -> None:
+        checkpoint_key = self._make_key(filename, document_hash)
+        self.processed.add(checkpoint_key)
+
+        try:
+            dir_name = os.path.dirname(self.filepath)
+            if dir_name:
+                os.makedirs(dir_name, exist_ok=True)
+
+            tmp_filepath = f"{self.filepath}.tmp"
+            with open(tmp_filepath, "w", encoding="utf-8") as file:
+                json.dump(
+                    sorted(self.processed),
+                    file,
+                    ensure_ascii=False,
+                    indent=4,
+                )
+            os.replace(tmp_filepath, self.filepath)
+        except Exception as e:
+            logger.error("Checkpoint kaydetme hatasi: %s", e, exc_info=True)
+
+    def is_processed(self, filename: str, document_hash: str) -> bool:
+        checkpoint_key = self._make_key(filename, document_hash)
+        return checkpoint_key in self.processed
+    
+class ManifestManager:
+    def __init__(self, filepath: str = "data/ingest_manifest.json"):
+        self.filepath = filepath
+        self.data = self._load()
+
+    def _load(self) -> Dict:
+        if os.path.exists(self.filepath):
+            try:
+                with open(self.filepath, "r", encoding="utf-8") as file:
+                    data = json.load(file)
+
+                if isinstance(data, dict):
+                    data.setdefault("documents", {})
+                    return data
+            except Exception as e:
+                logger.warning("Manifest okuma hatasi: %s", e)
+
+        return {"documents": {}}
+
+    def save(self) -> None:
+        try:
+            dir_name = os.path.dirname(self.filepath)
+            if dir_name:
+                os.makedirs(dir_name, exist_ok=True)
+
+            tmp_filepath = f"{self.filepath}.tmp"
+            with open(tmp_filepath, "w", encoding="utf-8") as file:
+                json.dump(
+                    self.data,
+                    file,
+                    ensure_ascii=False,
+                    indent=4,
+                )
+
+            os.replace(tmp_filepath, self.filepath)
+        except Exception as e:
+            logger.error("Manifest kaydetme hatasi: %s", e, exc_info=True)
+
+    def get_document(self, filename: str) -> Dict:
+        documents = self.data.get("documents", {})
+        document_data = documents.get(filename, {})
+
+        if isinstance(document_data, dict):
+            return document_data
+
+        return {}
+
+    def update_document(
+        self,
+        filename: str,
+        source_path: str,
+        document_hash: str,
+        ingestion_signature: str,
+        collection_name: str,
+        embedding_model: str,
+        embedding_dimension: int,
+        chunker: str,
+        max_chunk_length: int,
+        chunk_count: int,
+    ) -> None:
+        self.data.setdefault("documents", {})
+        self.data["documents"][filename] = {
+            "filename": filename,
+            "source_path": source_path,
+            "document_hash": document_hash,
+            "ingestion_signature": ingestion_signature,
+            "collection_name": collection_name,
+            "embedding_model": embedding_model,
+            "embedding_dimension": int(embedding_dimension),
+            "chunker": chunker,
+            "max_chunk_length": int(max_chunk_length),
+            "chunk_count": int(chunk_count),
+            "ingested_at": get_utc_timestamp(),
+        }
+        self.save()
 
 class PipelineOrchestrator:
     def __init__(self):
@@ -95,6 +288,13 @@ class PipelineOrchestrator:
         self.collection_name = self.cfg.get("vector_db", {}).get("collection_name", "doc_store")
         self.bm25_path = self.cfg.get("vector_db", {}).get("bm25_cache_path", "data/bm25_cache.pkl")
         self.assets_dir = os.path.join("data", "assets")
+        self.model_cfg = self.cfg.get("models", {})
+        self.embedding_model_name = self.model_cfg.get(
+            "embedding_model_name",
+            "BAAI/bge-m3",
+        )
+        self.embedding_dimension = self.model_cfg.get("embedding_dimension", 1024)
+        self.chunker_name = "docling_hierarchical"
         
         self.ingestion_cfg = self.cfg.get("ingestion", {})
         self.batch_size_limit = self.ingestion_cfg.get("batch_size", 32)
@@ -107,6 +307,7 @@ class PipelineOrchestrator:
         self.caption_prompt = self.prompts.get("caption_prompt", "Describe this technical image accurately.")
 
         self.checkpoint = CheckpointManager()
+        self.manifest = ManifestManager()
         self.vision_cache = VisionCacheManager()
         self.parser = DocumentParser(assets_dir=self.assets_dir)
         self.vision = VisionProcessor()
@@ -118,8 +319,38 @@ class PipelineOrchestrator:
         
         for pdf_path in pdf_paths:
             filename = os.path.basename(pdf_path)
-            if self.checkpoint.is_processed(filename) or not os.path.exists(pdf_path):
+
+            if not os.path.exists(pdf_path):
                 continue
+
+            document_hash = get_file_hash(pdf_path)
+            ingestion_signature = build_ingestion_signature(
+                document_hash=document_hash,
+                collection_name=self.collection_name,
+                embedding_model=self.embedding_model_name,
+                embedding_dimension=int(self.embedding_dimension),
+                chunker=self.chunker_name,
+                max_chunk_length=int(self.max_chunk_length),
+            )
+
+            existing_manifest = self.manifest.get_document(filename)
+            old_signature = existing_manifest.get("ingestion_signature", "")
+
+            if old_signature == ingestion_signature:
+                if self.checkpoint.is_processed(filename, ingestion_signature):
+                    logger.info(
+                        "Dokuman ayni ingestion signature ile daha once islenmis: %s",
+                        filename,
+                    )
+                    continue
+
+            if old_signature and old_signature != ingestion_signature:
+                logger.info(
+                    "Dokuman ingestion signature degisti. Eski chunklar siliniyor: %s",
+                    filename,
+                )
+                self.indexer.delete_by_source(filename)
+                self.checkpoint.remove_by_filename(filename)
 
             try:
                 dl_doc = self.parser.parse_document(pdf_path)
@@ -239,13 +470,27 @@ class PipelineOrchestrator:
 
             batch_chunks = []
             batch_metadatas = []
-            
-            for chunk_dict in chunks_data:
+
+            for chunk_index, chunk_dict in enumerate(chunks_data):
                 chunk_text = chunk_dict.get("text", "")
                 meta = chunk_dict.get("metadata", {})
                 page_no = meta.get("page", 0)
-                
+
                 final_chunk = f"--- SOURCE: {filename} | PAGE {page_no} ---\n{chunk_text}"
+                chunk_hash = get_text_hash(
+                    f"{ingestion_signature}\n{chunk_index}\n{final_chunk}"
+                )
+
+                meta["document_hash"] = document_hash
+                meta["ingestion_signature"] = ingestion_signature
+                meta["chunk_hash"] = chunk_hash
+                meta["chunk_index"] = int(chunk_index)
+                meta["embedding_model"] = self.embedding_model_name
+                meta["embedding_dimension"] = int(self.embedding_dimension)
+                meta["collection_name"] = self.collection_name
+                meta["chunker"] = self.chunker_name
+                meta["max_chunk_length"] = int(self.max_chunk_length)
+
                 batch_chunks.append(final_chunk)
                 batch_metadatas.append(meta)
 
@@ -257,7 +502,20 @@ class PipelineOrchestrator:
             if batch_chunks:
                 self.indexer.save_batch(batch_chunks, batch_metadatas)
             
-            self.checkpoint.mark_as_done(filename)
+            self.manifest.update_document(
+                filename=filename,
+                source_path=pdf_path,
+                document_hash=document_hash,
+                ingestion_signature=ingestion_signature,
+                collection_name=self.collection_name,
+                embedding_model=self.embedding_model_name,
+                embedding_dimension=int(self.embedding_dimension),
+                chunker=self.chunker_name,
+                max_chunk_length=int(self.max_chunk_length),
+                chunk_count=len(chunks_data),
+            )
+
+            self.checkpoint.mark_as_done(filename, ingestion_signature)
             self._clear_memory()
 
         self.indexer.build_and_save_bm25()

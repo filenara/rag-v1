@@ -30,7 +30,10 @@ class VectorIndexer:
         
         embeddings = self.embedder.encode(batch_chunks, normalize_embeddings=True)
         
-        ids = [str(uuid.uuid4()) for _ in range(len(batch_chunks))]
+        ids = [
+            str(metadata.get("chunk_hash") or uuid.uuid4())
+            for metadata in batch_metadatas
+        ]
         
         self.collection.add(
             documents=batch_chunks,
@@ -39,6 +42,21 @@ class VectorIndexer:
             ids=ids
         )
         logger.info("Batch basariyla ChromaDB'ye kaydedildi.")
+
+    def delete_by_source(self, source_name: str) -> None:
+        if not source_name:
+            return
+
+        try:
+            self.collection.delete(where={"source": source_name})
+            logger.info("Deleted old chunks for source: %s", source_name)
+        except Exception as e:
+            logger.warning(
+                "Could not delete chunks for source '%s': %s",
+                source_name,
+                e,
+                exc_info=True,
+            )
 
     def build_and_save_bm25(self) -> None:
         logger.info("BM25 indeksi olusturuluyor...")
