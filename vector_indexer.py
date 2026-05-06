@@ -7,6 +7,7 @@ from rank_bm25 import BM25Okapi
 
 from src.database import DatabaseManager
 from src.llm_manager import LLMManager
+from src.tokenization import technical_tokenize
 
 logger = logging.getLogger(__name__)
 
@@ -70,7 +71,7 @@ class VectorIndexer:
             logger.warning("Veritabaninda dokuman bulunamadi. BM25 olusturulamadi.")
             return
 
-        tokenized_corpus = [str(doc).lower().split(" ") for doc in documents]
+        tokenized_corpus = [technical_tokenize(str(doc)) for doc in documents]
         bm25 = BM25Okapi(tokenized_corpus)
         
         os.makedirs(os.path.dirname(self.bm25_path), exist_ok=True)

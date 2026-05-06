@@ -107,19 +107,23 @@ class CheckpointManager:
         self.processed: Set[str] = self._load()
 
     def _load(self) -> Set[str]:
-        if os.path.exists(self.filepath):
-            try:
-                with open(self.filepath, "r", encoding="utf-8") as file:
-                    data = json.load(file)
+        if not os.path.exists(self.filepath):
+            return set()
 
-                if isinstance(data, list):
-                    return set(str(item) for item in data)
+        try:
+            with open(self.filepath, "r", encoding="utf-8") as file:
+                data = json.load(file)
+        except Exception as e:
+            logger.warning("Checkpoint okuma hatasi: %s", e)
+            return set()
 
-                return set()
-            except Exception:
-                return set()
+        if not isinstance(data, list):
+            logger.warning(
+                "Checkpoint formati liste degil. Bos checkpoint ile devam ediliyor."
+            )
+            return set()
 
-        return set()
+        return set(str(item) for item in data)
 
     def _make_key(self, filename: str, ingestion_signature: str) -> str:
         return f"{filename}::{ingestion_signature}"
@@ -159,52 +163,6 @@ class CheckpointManager:
             if not item.startswith(prefix)
         }
         self.save()
-    def __init__(self, filepath: str = "data/ingest_checkpoint.json"):
-        self.filepath = filepath
-        self.processed: Set[str] = self._load()
-
-    def _load(self) -> Set[str]:
-        if os.path.exists(self.filepath):
-            try:
-                with open(self.filepath, "r", encoding="utf-8") as file:
-                    data = json.load(file)
-
-                if isinstance(data, list):
-                    return set(str(item) for item in data)
-
-                return set()
-            except Exception:
-                return set()
-
-        return set()
-
-    def _make_key(self, filename: str, document_hash: str) -> str:
-        return f"{filename}::{document_hash}"
-
-    def mark_as_done(self, filename: str, document_hash: str) -> None:
-        checkpoint_key = self._make_key(filename, document_hash)
-        self.processed.add(checkpoint_key)
-
-        try:
-            dir_name = os.path.dirname(self.filepath)
-            if dir_name:
-                os.makedirs(dir_name, exist_ok=True)
-
-            tmp_filepath = f"{self.filepath}.tmp"
-            with open(tmp_filepath, "w", encoding="utf-8") as file:
-                json.dump(
-                    sorted(self.processed),
-                    file,
-                    ensure_ascii=False,
-                    indent=4,
-                )
-            os.replace(tmp_filepath, self.filepath)
-        except Exception as e:
-            logger.error("Checkpoint kaydetme hatasi: %s", e, exc_info=True)
-
-    def is_processed(self, filename: str, document_hash: str) -> bool:
-        checkpoint_key = self._make_key(filename, document_hash)
-        return checkpoint_key in self.processed
     
 class ManifestManager:
     def __init__(self, filepath: str = "data/ingest_manifest.json"):

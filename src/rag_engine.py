@@ -14,6 +14,7 @@ from rank_bm25 import BM25Okapi
 from src.database import DatabaseManager
 from src.llm_manager import LLMManager
 from src.ste100_guard import STE100Guard
+from src.tokenization import technical_tokenize
 from src.utils import load_prompts, load_config
 
 logger = logging.getLogger(__name__)
@@ -318,6 +319,174 @@ class RAGEngine:
         )
 
         return False
+    
+    def retrieve_context(
+        self,
+        query: str,
+        collection_name: str,
+        source_filter: str = "",
+        top_k_context: int = 3,
+    ) -> Tuple[str, List[Dict], Optional[Image.Image]]:
+        embedder = self.llm_manager.load_embedder()
+        reranker = self.llm_manager.load_reranker()
+
+        col = self.db.get_collection(collection_name)
+        q_vec = embedder.encode([query], normalize_embeddings=True)
+
+        where_clause = None
+        if source_filter:
+            where_clause = {"source": {"$contains": source_filter}}
+
+        def execute_retrieval(current_where):
+            scores_dict = {}
+
+            vec_res = col.query(
+                query_embeddings=q_vec,
+                n_results=self.n_results,
+                where=current_where,
+            )
+
+            if vec_res["ids"] and vec_res["ids"][0]:
+                for rank, doc_id in enumerate(vec_res["ids"][0]):
+                    if doc_id not in scores_dict:
+                        scores_dict[doc_id] = 0
+
+                    scores_dict[doc_id] += 1 / (self.k_constant + rank)
+
+            if self.bm25:
+                query_tokens = technical_tokenize(query)
+                bm25_scores = np.array(self.bm25.get_scores(query_tokens))
+
+                if current_where and source_filter:
+                    filter_lower = source_filter.lower()
+                    valid_indices = []
+
+                    for src, indices in self.source_to_indices.items():
+                        if filter_lower in src:
+                            valid_indices.extend(indices)
+
+                    if valid_indices:
+                        mask = np.ones(len(bm25_scores), dtype=bool)
+                        mask[valid_indices] = False
+                        bm25_scores[mask] = -1.0
+
+                top_bm25_indices = np.argsort(bm25_scores)[::-1]
+                rank = 0
+
+                for idx in top_bm25_indices:
+                    if rank >= self.n_results or bm25_scores[idx] < 0:
+                        break
+
+                    doc_id = self.ids[idx]
+
+                    if doc_id not in scores_dict:
+                        scores_dict[doc_id] = 0
+
+                    scores_dict[doc_id] += 1 / (self.k_constant + rank)
+                    rank += 1
+
+            return scores_dict
+
+        doc_scores = execute_retrieval(where_clause)
+
+        sorted_candidates = sorted(
+            doc_scores.items(),
+            key=lambda item: item[1],
+            reverse=True,
+        )[:self.top_k_rerank]
+
+        if not sorted_candidates:
+            return "", [], None
+
+        valid_candidates = []
+
+        for doc_id, _score in sorted_candidates:
+            text = self.doc_text_map.get(doc_id, "")
+            meta = self.doc_meta_map.get(doc_id, {})
+
+            if text and str(text).strip():
+                valid_candidates.append(
+                    {
+                        "text": text,
+                        "meta": meta,
+                    }
+                )
+
+        if not valid_candidates:
+            return "", [], None
+
+        pairs = [
+            [query, candidate["text"]]
+            for candidate in valid_candidates
+        ]
+
+        if not pairs:
+            return "", [], None
+
+        scores = reranker.predict(pairs)
+        best_score = float(np.max(scores)) if len(scores) > 0 else 0.0
+
+        if best_score < self.min_rerank_score:
+            logger.info(
+                "Rerank skoru esik altinda. best_score=%s, threshold=%s",
+                best_score,
+                self.min_rerank_score,
+            )
+            return "", [], None
+
+        top_indices = np.argsort(scores)[::-1][:top_k_context]
+
+        context_texts = []
+        sources = []
+        seen_sources = set()
+        first_image_path = ""
+
+        for idx in top_indices:
+            candidate = valid_candidates[idx]
+            text = candidate["text"]
+            meta = candidate["meta"]
+
+            context_texts.append(text)
+
+            source_name = os.path.basename(meta.get("source", "Unknown"))
+            page_num = meta.get("page", "?")
+            parent_context = meta.get("parent_context", "")
+            has_visual = str(meta.get("has_visual", "False"))
+            image_path = meta.get("image_path", "")
+
+            source_key = (
+                source_name,
+                str(page_num),
+                parent_context,
+                image_path,
+            )
+
+            if source_key not in seen_sources:
+                seen_sources.add(source_key)
+                sources.append(
+                    {
+                        "source": source_name,
+                        "page": page_num,
+                        "parent_context": parent_context,
+                        "has_visual": has_visual.lower() == "true",
+                        "image_path": image_path,
+                        "rerank_score": float(scores[idx]),
+                    }
+                )
+
+            if not first_image_path and image_path:
+                first_image_path = image_path.split(",")[0].strip()
+
+        context_text = "\n\n".join(context_texts)
+        input_image = None
+
+        if first_image_path and os.path.exists(first_image_path):
+            try:
+                input_image = Image.open(first_image_path)
+            except Exception as e:
+                logger.error("Resim yukleme hatasi: %s", e, exc_info=True)
+
+        return context_text, sources, input_image
 
     def search_and_answer(
         self, 
@@ -393,159 +562,22 @@ class RAGEngine:
                     context_text = turn.get("context_text", "")
                     break
         
-        if logical_intent == "SEARCH":
-            col = self.db.get_collection(collection_name)
-            doc_scores = {}
-            q_vec = embedder.encode([standalone_query], normalize_embeddings=True)
-            
-            where_clause = None
-            if source_filter:
-                where_clause = {"source": {"$contains": source_filter}}
-                
-            def execute_retrieval(current_where):
-                scores_dict = {}
-                vec_res = col.query(
-                    query_embeddings=q_vec, 
-                    n_results=self.n_results, 
-                    where=current_where
-                )
-                
-                if vec_res["ids"] and vec_res["ids"][0]:
-                    for rank, doc_id in enumerate(vec_res["ids"][0]):
-                        if doc_id not in scores_dict: 
-                            scores_dict[doc_id] = 0
-                        scores_dict[doc_id] += 1 / (self.k_constant + rank)
-                        
-                if self.bm25:
-                    query_tokens = re.findall(r'\w+', standalone_query.lower())
-                    bm25_scores = np.array(self.bm25.get_scores(query_tokens))
-                    
-                    if current_where and source_filter:
-                        filter_lower = source_filter.lower()
-                        valid_indices = []
-                        for src, indices in self.source_to_indices.items():
-                            if filter_lower in src:
-                                valid_indices.extend(indices)
-                        
-                        # Eger gecerli indeks bulunamadiysa maskeleme yapmiyoruz
-                        # (Guvenlik adimi geregi buraya girmemesi beklenir ama cift dikis iyidir)
-                        if valid_indices:
-                            mask = np.ones(len(bm25_scores), dtype=bool)
-                            mask[valid_indices] = False
-                            bm25_scores[mask] = -1.0
-                                
-                    top_bm25_indices = np.argsort(bm25_scores)[::-1]
-                    rank = 0
-                    for idx in top_bm25_indices:
-                        if rank >= self.n_results or bm25_scores[idx] < 0:
-                            break
-                        doc_id = self.ids[idx]
-                        if doc_id not in scores_dict: 
-                            scores_dict[doc_id] = 0
-                        scores_dict[doc_id] += 1 / (self.k_constant + rank)
-                        rank += 1
-                return scores_dict
-                
-            doc_scores = execute_retrieval(where_clause)
-            
-            sorted_candidates = sorted(
-                doc_scores.items(), key=lambda item: item[1], reverse=True
-            )[:self.top_k_rerank]
-            
-            if not sorted_candidates:
-                return "Ilgili sonuc bulunamadi.", "", True, False, [], []
-            
-            valid_candidates = []
-            for item in sorted_candidates:
-                doc_id = item[0]
-                txt = self.doc_text_map.get(doc_id, "")
-                meta = self.doc_meta_map.get(doc_id, {})
-                if txt and str(txt).strip():
-                    valid_candidates.append({
-                        "text": txt,
-                        "meta": meta
-                    })
-            
-            pairs = [[standalone_query, cand["text"]] for cand in valid_candidates]
-            
-            if pairs:
-                scores = reranker.predict(pairs)
-
-                best_score = float(np.max(scores)) if len(scores) > 0 else 0.0
-
-                if best_score < self.min_rerank_score:
-                    logger.info(
-                        "Rerank skoru esik altinda. best_score=%s, threshold=%s",
-                        best_score,
-                        self.min_rerank_score,
-                    )
-                    return (
-                        "Information not found in provided documents.",
-                        "",
-                        True,
-                        False,
-                        [],
-                        [],
+                if logical_intent == "SEARCH":
+                    context_text, sources, input_image = self.retrieve_context(
+                        query=standalone_query,
+                        collection_name=collection_name,
+                        source_filter=source_filter,
                     )
 
-                top_indices = np.argsort(scores)[::-1][:3]
-
-                context_texts = []
-                seen_sources = set()
-                first_image_path = ""
-
-                for idx in top_indices:
-                    candidate = valid_candidates[idx]
-                    text = candidate["text"]
-                    meta = candidate["meta"]
-
-                    context_texts.append(text)
-
-                    source_name = os.path.basename(meta.get("source", "Unknown"))
-                    page_num = meta.get("page", "?")
-                    parent_context = meta.get("parent_context", "")
-                    has_visual = str(meta.get("has_visual", "False"))
-                    image_path = meta.get("image_path", "")
-
-                    source_key = (
-                        source_name,
-                        str(page_num),
-                        parent_context,
-                        image_path,
-                    )
-
-                    if source_key not in seen_sources:
-                        seen_sources.add(source_key)
-                        sources.append(
-                            {
-                                "source": source_name,
-                                "page": page_num,
-                                "parent_context": parent_context,
-                                "has_visual": has_visual.lower() == "true",
-                                "image_path": image_path,
-                                "rerank_score": float(scores[idx]),
-                            }
+                    if not context_text.strip():
+                        return (
+                            "Information not found in provided documents.",
+                            "",
+                            True,
+                            False,
+                            [],
+                            [],
                         )
-
-                    if not first_image_path and image_path:
-                        first_image_path = image_path.split(",")[0].strip()
-
-                context_text = "\n\n".join(context_texts)
-
-                if first_image_path and os.path.exists(first_image_path):
-                    try:
-                        input_image = Image.open(first_image_path)
-                    except Exception as e:
-                        logger.error("Resim yukleme hatasi: %s", e, exc_info=True)
-            else:
-                return (
-                    "Information not found in provided documents.",
-                    "",
-                    True,
-                    False,
-                    [],
-                    [],
-                )
         messages = []
         
         history_text_formatted = ""
