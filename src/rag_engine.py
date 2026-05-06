@@ -500,9 +500,6 @@ class RAGEngine:
         
         if history is None:
             history = []
-
-        embedder = self.llm_manager.load_embedder()
-        reranker = self.llm_manager.load_reranker()
         
         # 1. Regex ile Slash Command Tespiti ve Guvenlik Kontrolu
         slash_match = re.search(r'(?:^|\s)/([\w.-]+)', query)
@@ -561,23 +558,23 @@ class RAGEngine:
                 if turn.get("role") == "assistant":
                     context_text = turn.get("context_text", "")
                     break
-        
-                if logical_intent == "SEARCH":
-                    context_text, sources, input_image = self.retrieve_context(
-                        query=standalone_query,
-                        collection_name=collection_name,
-                        source_filter=source_filter,
-                    )
 
-                    if not context_text.strip():
-                        return (
-                            "Information not found in provided documents.",
-                            "",
-                            True,
-                            False,
-                            [],
-                            [],
-                        )
+        if logical_intent == "SEARCH":
+            context_text, sources, input_image = self.retrieve_context(
+                query=standalone_query,
+                collection_name=collection_name,
+                source_filter=source_filter,
+            )
+
+            if not context_text.strip():
+                return (
+                    "Information not found in provided documents.",
+                    "",
+                    True,
+                    False,
+                    [],
+                    [],
+                )
         messages = []
         
         history_text_formatted = ""
