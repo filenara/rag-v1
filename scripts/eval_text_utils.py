@@ -100,3 +100,28 @@ def evaluate_forbidden_phrases(
                 violations.append(phrase)
 
     return len(violations) == 0, violations
+
+FORBIDDEN_OUTPUT_MARKERS = [
+    "<thinking",
+    "</thinking",
+    "<think",
+    "</think",
+    "analyze document context",
+    "synthesize and resolve conflict",
+    "final plan:",
+    "the user is asking",
+    "i will construct",
+    "i will provide",
+    "let's re-read",
+]
+
+
+def detect_forbidden_output_markers(text: Any) -> List[str]:
+    normalized = str(text or "").lower()
+    violations = []
+
+    for marker in FORBIDDEN_OUTPUT_MARKERS:
+        if marker in normalized:
+            violations.append(marker)
+
+    return violations

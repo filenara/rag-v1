@@ -122,11 +122,89 @@ class RAGEngine:
         return vision_client.generate(api_messages, max_tokens=max_tokens)
 
     def _clean_output(self, raw_text: str) -> str:
-        text = re.sub(r"<thinking>.*?</thinking>", "", raw_text, flags=re.DOTALL).strip()
-        match = re.search(r"<answer>(.*?)</answer>", text, flags=re.DOTALL)
-        if match:
-            return match.group(1).strip()
+        text = str(raw_text or "").strip()
+
+        if not text:
+            return ""
+
+        answer_match = re.search(
+            r"<\s*answer\s*>(.*?)<\s*/\s*answer\s*>",
+            text,
+            flags=re.IGNORECASE | re.DOTALL,
+        )
+
+        if answer_match:
+            text = answer_match.group(1).strip()
+        else:
+            text = self._remove_reasoning_blocks(text)
+
+        text = self._remove_stray_model_tags(text)
+        text = text.strip()
+
+        if self._contains_reasoning_leak(text):
+            logger.warning("Reasoning content detected in model output. Output was suppressed.")
+            return ""
+
         return text
+    
+    def _remove_reasoning_blocks(self, text: str) -> str:
+        cleaned = str(text or "")
+
+        for tag in ["thinking", "think"]:
+            closed_block_pattern = (
+                rf"<\s*{tag}\b[^>]*>.*?<\s*/\s*{tag}\s*>"
+            )
+            cleaned = re.sub(
+                closed_block_pattern,
+                "",
+                cleaned,
+                flags=re.IGNORECASE | re.DOTALL,
+            )
+
+            unclosed_block_pattern = rf"<\s*{tag}\b[^>]*>.*$"
+            cleaned = re.sub(
+                unclosed_block_pattern,
+                "",
+                cleaned,
+                flags=re.IGNORECASE | re.DOTALL,
+            )
+
+        return cleaned.strip()
+
+
+    def _remove_stray_model_tags(self, text: str) -> str:
+        cleaned = str(text or "")
+
+        cleaned = re.sub(
+            r"<\s*/?\s*(answer|thinking|think)\s*>",
+            "",
+            cleaned,
+            flags=re.IGNORECASE,
+        )
+
+        return cleaned.strip()
+
+
+    def _contains_reasoning_leak(self, text: str) -> bool:
+        normalized = str(text or "").lower()
+
+        reasoning_markers = [
+            "<thinking",
+            "</thinking",
+            "<think",
+            "</think",
+            "analyze document context",
+            "synthesize and resolve conflict",
+            "final plan:",
+            "final plan",
+            "the user is asking",
+            "i will construct",
+            "i will provide",
+            "wait,",
+            "let's re-read",
+        ]
+
+        return any(marker in normalized for marker in reasoning_markers)
     
     def _parse_json_response(self, raw_text: str) -> dict:
         cleaned_text = self._clean_output(raw_text).strip()

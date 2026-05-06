@@ -8,6 +8,7 @@ from src.rag_engine import RAGEngine
 from src.utils import load_config
 
 from eval_text_utils import (
+    detect_forbidden_output_markers,
     evaluate_forbidden_phrases,
     evaluate_phrase_group_hit_rate,
     normalize_eval_text,
@@ -163,15 +164,18 @@ def evaluate_case(
         must_not_include=must_not_include,
     )
     no_forbidden_phrase = forbidden_result["passed"]
+    reasoning_violations = detect_forbidden_output_markers(final_text)
+    no_reasoning_leak = len(reasoning_violations) == 0
 
     if expected_not_found:
-        passed = not_found and no_forbidden_phrase
+        passed = not_found and no_forbidden_phrase and no_reasoning_leak
     else:
         passed = (
             not not_found
             and source_hit
             and include_hit_rate >= min_include_hit_rate
             and no_forbidden_phrase
+            and no_reasoning_leak
         )
 
     return {
@@ -190,6 +194,8 @@ def evaluate_case(
         "include_hits": include_result["hits"],
         "include_misses": include_result["misses"],
         "forbidden_violations": forbidden_result["violations"],
+        "no_reasoning_leak": no_reasoning_leak,
+        "reasoning_violations": reasoning_violations,
         "returned_sources": sources,
     }
 
@@ -218,7 +224,13 @@ def print_case_result(index: int, result: Dict[str, Any]) -> None:
         print("Forbidden violations:")
         for phrase in result["forbidden_violations"]:
             print(f"  - {phrase}")
+
+    if result.get("reasoning_violations"):
+        print("Reasoning leakage markers:")
+        for marker in result["reasoning_violations"]:
+            print(f"  - {marker}")
     print(f"No forbidden phrase: {result['no_forbidden_phrase']}")
+    print(f"No reasoning leak: {result['no_reasoning_leak']}")
     print(f"Context length: {result['context_length']}")
     print("Final answer:")
     print(result["final_text"])
