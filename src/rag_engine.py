@@ -34,6 +34,14 @@ class RAGEngine:
         self.k_constant = self.retrieval_cfg.get("k_constant", 60)
         self.top_k_rerank = self.retrieval_cfg.get("top_k_rerank", 5)
         self.min_rerank_score = self.retrieval_cfg.get("min_rerank_score", 0.25)
+        self.enable_low_score_fallback = self.retrieval_cfg.get(
+            "enable_low_score_fallback",
+            False,
+        )
+        self.fallback_min_rrf_score = self.retrieval_cfg.get(
+            "fallback_min_rrf_score",
+            0.015,
+        )
         self.verification_cfg = self.config.get("verification", {})
         self.verification_enabled = self.verification_cfg.get("enabled", True)
         self.verification_mode = self.verification_cfg.get("mode", "reject")
@@ -400,7 +408,7 @@ class RAGEngine:
 
         valid_candidates = []
 
-        for doc_id, _score in sorted_candidates:
+        for candidate_rank, (doc_id, rrf_score) in enumerate(sorted_candidates):
             text = self.doc_text_map.get(doc_id, "")
             meta = self.doc_meta_map.get(doc_id, {})
 
@@ -409,6 +417,8 @@ class RAGEngine:
                     {
                         "text": text,
                         "meta": meta,
+                        "rrf_score": float(rrf_score),
+                        "candidate_rank": candidate_rank,
                     }
                 )
 
@@ -425,14 +435,34 @@ class RAGEngine:
 
         scores = reranker.predict(pairs)
         best_score = float(np.max(scores)) if len(scores) > 0 else 0.0
+        best_rrf_score = max(
+            candidate.get("rrf_score", 0.0)
+            for candidate in valid_candidates
+        )
 
         if best_score < self.min_rerank_score:
-            logger.info(
-                "Rerank skoru esik altinda. best_score=%s, threshold=%s",
+            if (
+                not self.enable_low_score_fallback
+                or best_rrf_score < self.fallback_min_rrf_score
+            ):
+                logger.info(
+                    "Rerank skoru esik altinda. best_score=%s, "
+                    "threshold=%s, best_rrf_score=%s, fallback_enabled=%s",
+                    best_score,
+                    self.min_rerank_score,
+                    best_rrf_score,
+                    self.enable_low_score_fallback,
+                )
+                return "", [], None
+
+            logger.warning(
+                "Low-score retrieval fallback aktif. best_score=%s, "
+                "threshold=%s, best_rrf_score=%s, fallback_min_rrf_score=%s",
                 best_score,
                 self.min_rerank_score,
+                best_rrf_score,
+                self.fallback_min_rrf_score,
             )
-            return "", [], None
 
         top_indices = np.argsort(scores)[::-1][:top_k_context]
 
@@ -471,6 +501,8 @@ class RAGEngine:
                         "has_visual": has_visual.lower() == "true",
                         "image_path": image_path,
                         "rerank_score": float(scores[idx]),
+                        "rrf_score": float(candidate.get("rrf_score", 0.0)),
+                        "candidate_rank": int(candidate.get("candidate_rank", -1)),
                     }
                 )
 

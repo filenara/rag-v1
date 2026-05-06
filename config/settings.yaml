@@ -31,10 +31,12 @@ document_parser:
   generate_picture_images: true
 
 retrieval:
-  n_results: 10
+  n_results: 15
   k_constant: 60
-  top_k_rerank: 5
-  min_rerank_score: 0.35
+  top_k_rerank: 8
+  min_rerank_score: -1.0
+  enable_low_score_fallback: true
+  fallback_min_rrf_score: 0.015
 
 verification:
   enabled: true
