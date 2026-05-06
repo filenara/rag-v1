@@ -6,6 +6,7 @@ from typing import Any, Dict, List
 
 from src.rag_engine import RAGEngine
 from src.utils import load_config
+from eval_text_utils import evaluate_phrase_group_hit_rate
 
 logging.basicConfig(
     level=logging.INFO,
@@ -89,19 +90,18 @@ def evaluate_page_hit(
 
 def evaluate_keyword_hit_rate(
     context_text: str,
-    expected_keywords: List[str],
-) -> float:
-    if not expected_keywords:
-        return 1.0
+    expected_keywords: List[Any],
+) -> Dict[str, Any]:
+    hit_rate, hits, misses = evaluate_phrase_group_hit_rate(
+        text=context_text,
+        expected_items=expected_keywords,
+    )
 
-    normalized_context = context_text.lower()
-    hit_count = 0
-
-    for keyword in expected_keywords:
-        if str(keyword).lower() in normalized_context:
-            hit_count += 1
-
-    return hit_count / len(expected_keywords)
+    return {
+        "hit_rate": hit_rate,
+        "hits": hits,
+        "misses": misses,
+    }
 
 
 def evaluate_case(
@@ -130,10 +130,11 @@ def evaluate_case(
         expected_pages=expected_pages,
         page_tolerance=page_tolerance,
     )
-    keyword_hit_rate = evaluate_keyword_hit_rate(
+    keyword_result = evaluate_keyword_hit_rate(
         context_text=context_text,
         expected_keywords=expected_keywords,
     )
+    keyword_hit_rate = keyword_result["hit_rate"]
 
     passed = (
         bool(context_text.strip())
@@ -149,6 +150,8 @@ def evaluate_case(
         "page_hit": page_hit,
         "keyword_hit_rate": keyword_hit_rate,
         "returned_sources": sources,
+        "keyword_hits": keyword_result["hits"],
+        "keyword_misses": keyword_result["misses"],
     }
 
 
@@ -161,6 +164,16 @@ def print_case_result(index: int, result: Dict[str, Any]) -> None:
     print(f"Source hit: {result['source_hit']}")
     print(f"Page hit: {result['page_hit']}")
     print(f"Keyword hit rate: {result['keyword_hit_rate']:.2f}")
+
+    if result.get("keyword_hits"):
+        print("Keyword hits:")
+        for keyword in result["keyword_hits"]:
+            print(f"  + {keyword}")
+
+    if result.get("keyword_misses"):
+        print("Keyword misses:")
+        for group in result["keyword_misses"]:
+            print(f"  - {' | '.join(group)}")
 
     if result["returned_sources"]:
         print("Returned sources:")

@@ -7,6 +7,12 @@ from typing import Any, Dict, List
 from src.rag_engine import RAGEngine
 from src.utils import load_config
 
+from eval_text_utils import (
+    evaluate_forbidden_phrases,
+    evaluate_phrase_group_hit_rate,
+    normalize_eval_text,
+)
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
@@ -45,9 +51,8 @@ def load_jsonl(file_path: str) -> List[Dict[str, Any]]:
 
     return cases
 
-
 def normalize_text(text: str) -> str:
-    return str(text).lower().strip()
+    return normalize_eval_text(text)
 
 
 def normalize_source_name(source: str) -> str:
@@ -85,32 +90,33 @@ def evaluate_source_hit(
 
 def evaluate_must_include(
     answer: str,
-    must_include: List[str],
-) -> float:
-    if not must_include:
-        return 1.0
+    must_include: List[Any],
+) -> Dict[str, Any]:
+    hit_rate, hits, misses = evaluate_phrase_group_hit_rate(
+        text=answer,
+        expected_items=must_include,
+    )
 
-    normalized_answer = normalize_text(answer)
-    hit_count = 0
-
-    for phrase in must_include:
-        if normalize_text(phrase) in normalized_answer:
-            hit_count += 1
-
-    return hit_count / len(must_include)
+    return {
+        "hit_rate": hit_rate,
+        "hits": hits,
+        "misses": misses,
+    }
 
 
 def evaluate_must_not_include(
     answer: str,
-    must_not_include: List[str],
-) -> bool:
-    normalized_answer = normalize_text(answer)
+    must_not_include: List[Any],
+) -> Dict[str, Any]:
+    passed, violations = evaluate_forbidden_phrases(
+        text=answer,
+        forbidden_items=must_not_include,
+    )
 
-    for phrase in must_not_include:
-        if normalize_text(phrase) in normalized_answer:
-            return False
-
-    return True
+    return {
+        "passed": passed,
+        "violations": violations,
+    }
 
 
 def evaluate_case(
@@ -146,14 +152,17 @@ def evaluate_case(
         returned_sources=sources,
         expected_sources=expected_sources,
     )
-    include_hit_rate = evaluate_must_include(
+    include_result = evaluate_must_include(
         answer=final_text,
         must_include=must_include,
     )
-    no_forbidden_phrase = evaluate_must_not_include(
+    include_hit_rate = include_result["hit_rate"]
+
+    forbidden_result = evaluate_must_not_include(
         answer=final_text,
         must_not_include=must_not_include,
     )
+    no_forbidden_phrase = forbidden_result["passed"]
 
     if expected_not_found:
         passed = not_found and no_forbidden_phrase
@@ -178,6 +187,9 @@ def evaluate_case(
         "is_compliant": is_compliant,
         "was_corrected": was_corrected,
         "feedback_report": feedback_report,
+        "include_hits": include_result["hits"],
+        "include_misses": include_result["misses"],
+        "forbidden_violations": forbidden_result["violations"],
         "returned_sources": sources,
     }
 
@@ -192,6 +204,20 @@ def print_case_result(index: int, result: Dict[str, Any]) -> None:
     print(f"Returned not found: {result['not_found']}")
     print(f"Source hit: {result['source_hit']}")
     print(f"Include hit rate: {result['include_hit_rate']:.2f}")
+    if result.get("include_hits"):
+        print("Include hits:")
+        for phrase in result["include_hits"]:
+            print(f"  + {phrase}")
+
+    if result.get("include_misses"):
+        print("Include misses:")
+        for group in result["include_misses"]:
+            print(f"  - {' | '.join(group)}")
+
+    if result.get("forbidden_violations"):
+        print("Forbidden violations:")
+        for phrase in result["forbidden_violations"]:
+            print(f"  - {phrase}")
     print(f"No forbidden phrase: {result['no_forbidden_phrase']}")
     print(f"Context length: {result['context_length']}")
     print("Final answer:")
