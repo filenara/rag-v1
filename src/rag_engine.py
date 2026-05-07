@@ -139,10 +139,14 @@ class RAGEngine:
             text = self._remove_reasoning_blocks(text)
 
         text = self._remove_stray_model_tags(text)
+        text = self._remove_prompt_fragments(text)
         text = text.strip()
 
-        if self._contains_reasoning_leak(text):
-            logger.warning("Reasoning content detected in model output. Output was suppressed.")
+        if self._contains_reasoning_leak(text) or self._contains_prompt_leak(text):
+            logger.warning(
+                "Internal reasoning or prompt fragment detected in model output. "
+                "Output was suppressed."
+            )
             return ""
 
         return text
@@ -205,6 +209,56 @@ class RAGEngine:
         ]
 
         return any(marker in normalized for marker in reasoning_markers)
+    
+    def _remove_prompt_fragments(self, text: str) -> str:
+        lines = str(text or "").splitlines()
+        cleaned_lines = []
+
+        prompt_fragment_patterns = [
+            r"^\s*`+\s*\.?\s*$",
+            r"^\s*\.?\s*$",
+            r"no conversational fillers",
+            r"ensure the answer is direct",
+            r"answer directly",
+            r"omit conversational fillers",
+            r"ensure the answer is direct and professional",
+        ]
+
+        def is_prompt_fragment(line: str) -> bool:
+            normalized = line.strip().lower()
+
+            if not normalized:
+                return True
+
+            return any(
+                re.search(pattern, normalized, flags=re.IGNORECASE)
+                for pattern in prompt_fragment_patterns
+            )
+
+        skipping_leading_fragments = True
+
+        for line in lines:
+            if skipping_leading_fragments and is_prompt_fragment(line):
+                continue
+
+            skipping_leading_fragments = False
+            cleaned_lines.append(line)
+
+        return "\n".join(cleaned_lines).strip()
+
+
+    def _contains_prompt_leak(self, text: str) -> bool:
+        normalized = str(text or "").lower()
+
+        prompt_leak_markers = [
+            "no conversational fillers",
+            "ensure the answer is direct",
+            "answer directly",
+            "omit conversational fillers",
+            "[image attached to this message]",
+        ]
+
+        return any(marker in normalized for marker in prompt_leak_markers)
     
     def _parse_json_response(self, raw_text: str) -> dict:
         cleaned_text = self._clean_output(raw_text).strip()

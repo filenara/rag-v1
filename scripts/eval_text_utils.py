@@ -113,6 +113,11 @@ FORBIDDEN_OUTPUT_MARKERS = [
     "i will construct",
     "i will provide",
     "let's re-read",
+    "no conversational fillers",
+    "ensure the answer is direct",
+    "answer directly",
+    "omit conversational fillers",
+    "[image attached to this message]",
 ]
 
 
