@@ -140,6 +140,7 @@ class RAGEngine:
 
         text = self._remove_stray_model_tags(text)
         text = self._remove_prompt_fragments(text)
+        text = self._remove_internal_plan_fragments(text)
         text = text.strip()
 
         if self._contains_reasoning_leak(text) or self._contains_prompt_leak(text):
@@ -206,6 +207,21 @@ class RAGEngine:
             "i will provide",
             "wait,",
             "let's re-read",
+            "i will draft",
+            "i will ensure",
+            "i will structure",
+            "i will use",
+            "i will not use",
+            "i need to",
+            "key information to include",
+            "xml structure",
+            "` tags",
+            "sentence 1:",
+            "sentence 2:",
+            "sentence 3:",
+            "the procedure should",
+            "the descriptive text must",
+            "the safety text must",
         ]
 
         return any(marker in normalized for marker in reasoning_markers)
@@ -245,6 +261,72 @@ class RAGEngine:
             cleaned_lines.append(line)
 
         return "\n".join(cleaned_lines).strip()
+    
+    def _remove_internal_plan_fragments(self, text: str) -> str:
+        cleaned = str(text or "").strip()
+
+        if not cleaned:
+            return ""
+
+        plan_markers = [
+            "i will draft",
+            "i will ensure",
+            "i will structure",
+            "i will use",
+            "i will not use",
+            "i need to",
+            "key information to include",
+            "xml structure",
+            "` tags",
+            "sentence 1:",
+            "sentence 2:",
+            "sentence 3:",
+            "the procedure should",
+            "the descriptive text must",
+            "the safety text must",
+        ]
+
+        def has_plan_marker(value: str) -> bool:
+            normalized = value.strip().lower()
+            return any(marker in normalized for marker in plan_markers)
+
+        paragraphs = re.split(r"\n\s*\n", cleaned)
+        remaining_paragraphs = []
+        skipping_leading_plan = True
+
+        for paragraph in paragraphs:
+            paragraph = paragraph.strip()
+
+            if not paragraph:
+                continue
+
+            if skipping_leading_plan and has_plan_marker(paragraph):
+                continue
+
+            skipping_leading_plan = False
+            remaining_paragraphs.append(paragraph)
+
+        if remaining_paragraphs:
+            cleaned = "\n\n".join(remaining_paragraphs).strip()
+
+        lines = cleaned.splitlines()
+        cleaned_lines = []
+        skipping_leading_plan = True
+
+        for line in lines:
+            stripped = line.strip()
+
+            if skipping_leading_plan and (
+                not stripped
+                or has_plan_marker(stripped)
+                or re.match(r"^[-*•]\s+", stripped)
+            ):
+                continue
+
+            skipping_leading_plan = False
+            cleaned_lines.append(line)
+
+        return "\n".join(cleaned_lines).strip()
 
 
     def _contains_prompt_leak(self, text: str) -> bool:
@@ -256,6 +338,17 @@ class RAGEngine:
             "answer directly",
             "omit conversational fillers",
             "[image attached to this message]",
+            "i will draft",
+            "i will ensure",
+            "i will structure",
+            "i need to",
+            "key information to include",
+            "xml structure",
+            "` tags",
+            "sentence 1:",
+            "the procedure should",
+            "the descriptive text must",
+            "the safety text must",
         ]
 
         return any(marker in normalized for marker in prompt_leak_markers)

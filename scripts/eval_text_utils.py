@@ -118,6 +118,21 @@ FORBIDDEN_OUTPUT_MARKERS = [
     "answer directly",
     "omit conversational fillers",
     "[image attached to this message]",
+    "i will draft",
+    "i will ensure",
+    "i will structure",
+    "i will use",
+    "i will not use",
+    "i need to",
+    "key information to include",
+    "xml structure",
+    "` tags",
+    "sentence 1:",
+    "sentence 2:",
+    "sentence 3:",
+    "the procedure should",
+    "the descriptive text must",
+    "the safety text must",
 ]
 
 
