@@ -1230,7 +1230,16 @@ class RAGEngine:
         
         try:
             raw_text = self._generate_api(messages, max_tokens=2048)
+            logger.info(
+                "[GenerationDebug] raw_model_output_preview=%r",
+                self._preview_debug_text(raw_text, limit=2500),
+            )
             final_text = self._clean_output(raw_text)
+            logger.info(
+                "[GenerationDebug] cleaned_model_output_preview=%r",
+                self._preview_debug_text(final_text, limit=2500),
+            )
+
         except Exception as e:
             logger.error("API cagirilirken hata: %s", e, exc_info=True)
             final_text = "Cevap uretilirken yerel modelde bir hata olustu."
@@ -1266,6 +1275,13 @@ class RAGEngine:
             style_feedback = style_result.get("feedback", [])
 
             if is_not_found:
+                logger.warning(
+                    "[GenerationDebug] final answer is not-found before return. "
+                    "context_length=%s sources_count=%s final_answer=%r",
+                    len(context_text or ""),
+                    len(sources or []),
+                    self._preview_debug_text(final_text, limit=1000),
+                )
                 is_compliant = dictionary_compliant
             else:
                 feedback_report = feedback_report + style_feedback
@@ -1311,5 +1327,21 @@ class RAGEngine:
 
                 final_text = current_text
                 was_corrected = retries > 0
+
+            logger.info(
+                "[GenerationDebug] ste100_validation_result "
+                "is_compliant=%s was_corrected=%s feedback_count=%s "
+                "not_found=%s",
+                is_compliant,
+                was_corrected,
+                len(feedback_report or []),
+                self._is_information_not_found(final_text),
+            )
+
+            if feedback_report:
+                logger.info(
+                    "[GenerationDebug] ste100_feedback=%s",
+                    feedback_report,
+                )    
 
         return final_text, context_text, is_compliant, was_corrected, feedback_report, sources
