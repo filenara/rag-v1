@@ -421,6 +421,127 @@ class RAGEngine:
         json_text = cleaned_text[start_idx:end_idx + 1]
         return json.loads(json_text)
 
+    def _preprocess_ste100_retrieval_query(
+        self,
+        query: str,
+        template_type: str,
+    ) -> str:
+        raw_query = str(query or "").strip()
+
+        if not raw_query:
+            return ""
+
+        cleaned_query = raw_query
+
+        leading_patterns = [
+            r"^\s*(write|create|generate|produce|provide)\s+"
+            r"(an?\s+)?asd[-\s]?ste100\s+"
+            r"(procedure|descriptive\s+text|safety\s+warning|"
+            r"safety\s+caution)\s+(for|about|on)\s+",
+            r"^\s*(write|create|generate|produce|provide)\s+"
+            r"(an?\s+)?"
+            r"(procedure|descriptive\s+text|safety\s+warning|"
+            r"safety\s+caution)\s+(for|about|on)\s+",
+        ]
+
+        for pattern in leading_patterns:
+            cleaned_query = re.sub(
+                pattern,
+                "",
+                cleaned_query,
+                flags=re.IGNORECASE,
+            ).strip()
+
+        cleanup_patterns = [
+            r"\basd[-\s]?ste100\b",
+            r"\bprocedure\b",
+            r"\bdescriptive\s+text\b",
+            r"\bsafety\s+warning\b",
+            r"\bsafety\s+caution\b",
+        ]
+
+        for pattern in cleanup_patterns:
+            cleaned_query = re.sub(
+                pattern,
+                " ",
+                cleaned_query,
+                flags=re.IGNORECASE,
+            )
+
+        cleaned_query = re.sub(r"[^A-Za-z0-9./_-]+", " ", cleaned_query)
+        cleaned_query = re.sub(r"\s+", " ", cleaned_query).strip()
+
+        normalized = cleaned_query.lower()
+        template = str(template_type or "").lower()
+
+        expansion_rules = [
+            {
+                "triggers": ["rplidar", "a2m12", "power", "interface"],
+                "expansion": (
+                    "5V MOTOCTL TX RX power supply "
+                    "communication interface"
+                ),
+            },
+            {
+                "triggers": ["rplidar", "a2m12", "power", "supply"],
+                "expansion": "5V 4.9V 5.2V 2500mA 600mA power supply",
+            },
+            {
+                "triggers": ["rplidar", "a2m12", "scanning"],
+                "expansion": (
+                    "12 meter 10Hz 16kHz 0.225 angular resolution"
+                ),
+            },
+            {
+                "triggers": ["os2", "laser"],
+                "expansion": (
+                    "Class 1 865nm OS2-128 OS2-64 OS2-32 laser safety"
+                ),
+            },
+            {
+                "triggers": ["metal", "52", "ac"],
+                "expansion": (
+                    "waterproof Gigabit Ethernet 802.11ac 2.4GHz 5GHz"
+                ),
+            },
+            {
+                "triggers": ["emergency", "shutdown"],
+                "expansion": (
+                    "Red Button Cable A supervisor ext 440 "
+                    "emergency shutdown"
+                ),
+            },
+        ]
+
+        expansions = []
+
+        for rule in expansion_rules:
+            if all(trigger in normalized for trigger in rule["triggers"]):
+                expansions.append(rule["expansion"])
+                break
+
+        if template == "safety":
+            expansions.append("warning caution danger safety")
+
+        retrieval_terms = [cleaned_query]
+        retrieval_terms.extend(expansions)
+
+        retrieval_query = " ".join(
+            term.strip()
+            for term in retrieval_terms
+            if term and term.strip()
+        )
+
+        retrieval_query = re.sub(r"\s+", " ", retrieval_query).strip()
+
+        logger.info(
+            "STE100 retrieval query preprocessed. original=%r, retrieval=%r",
+            raw_query,
+            retrieval_query,
+        )
+
+        return retrieval_query or raw_query    
+
     def _analyze_and_rewrite_query(self, query: str, history: list) -> str:
         history_text = ""
         if history:
@@ -851,7 +972,25 @@ class RAGEngine:
         elif intent in ["PROCEDURE", "DESCRIPTIVE", "SAFETY", "QA"]:
             logical_intent = "SEARCH"
             template_type = explicit_template if use_ste100 else "General"
-            standalone_query = self._analyze_and_rewrite_query(query, history)
+
+            if use_ste100:
+                retrieval_query = self._preprocess_ste100_retrieval_query(
+                    query=query,
+                    template_type=template_type,
+                )
+
+                if history:
+                    standalone_query = self._analyze_and_rewrite_query(
+                        retrieval_query,
+                        history,
+                    )
+                else:
+                    standalone_query = retrieval_query
+            else:
+                standalone_query = self._analyze_and_rewrite_query(
+                    query,
+                    history,
+                )
         else:
             logical_intent = "CHAT"
             standalone_query = query
