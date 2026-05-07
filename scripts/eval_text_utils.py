@@ -10,7 +10,7 @@ def normalize_eval_text(text: Any) -> str:
     normalized = normalized.replace("İ", "i")
 
     normalized = re.sub(r"[•●▪▫◦‣⁃·]", " ", normalized)
-    normalized = re.sub(r"[_\\-/]+", " ", normalized)
+    normalized = re.sub(r"[-_/\\]+", " ", normalized)
     normalized = re.sub(r"[^a-z0-9.%+#]+", " ", normalized)
     normalized = re.sub(r"\s+", " ", normalized)
 
