@@ -16,6 +16,7 @@ from src.llm_manager import LLMManager
 from src.ste100_guard import STE100Guard
 from src.tokenization import technical_tokenize
 from src.utils import load_prompts, load_config
+from src.ste100_style_validator import validate_ste100_style
 
 logger = logging.getLogger(__name__)
 
@@ -353,6 +354,17 @@ class RAGEngine:
 
         return any(marker in normalized for marker in prompt_leak_markers)
     
+    def _is_information_not_found(self, text: str) -> bool:
+        normalized = str(text or "").lower()
+
+        not_found_markers = [
+            "information not found",
+            "not found in provided documents",
+            "not found in provided fragment",
+        ]
+
+        return any(marker in normalized for marker in not_found_markers)
+
     def _parse_json_response(self, raw_text: str) -> dict:
         cleaned_text = self._clean_output(raw_text).strip()
 
@@ -897,32 +909,65 @@ class RAGEngine:
 
         if use_ste100 and logical_intent == "SEARCH":
             logger.info("STE100 kurallari denetleniyor...")
-            is_compliant, feedback_report = self.guard.analyze_and_report(final_text)
-            
-            if not is_compliant and strict_mode:
+
+            is_not_found = self._is_information_not_found(final_text)
+            dictionary_compliant, feedback_report = self.guard.analyze_and_report(
+                final_text
+            )
+
+            style_result = validate_ste100_style(
+                answer=final_text,
+                template_type=template_type,
+                require_safety_marker=str(template_type).lower() == "safety",
+            )
+
+            style_feedback = style_result.get("feedback", [])
+
+            if is_not_found:
+                is_compliant = dictionary_compliant
+            else:
+                feedback_report = feedback_report + style_feedback
+                is_compliant = dictionary_compliant and style_result["passed"]
+
+            if not is_compliant and strict_mode and not is_not_found:
                 max_retries = 2
                 retries = 0
                 current_text = final_text
-                
+
                 while not is_compliant and retries < max_retries:
                     retries += 1
-                    logger.info("Ihlaller duzeltiliyor... (Deneme %s/%s)", retries, max_retries)
+                    logger.info(
+                        "Ihlaller duzeltiliyor... (Deneme %s/%s)",
+                        retries,
+                        max_retries,
+                    )
                     previous_text = current_text
-                    
-                    # refine_answer fonksiyonunun yeni imzasina (parametrelerine) gore guncellendi
+
                     current_text = self.refine_answer(
-                        draft_text=current_text, 
+                        draft_text=current_text,
                         feedback_list=feedback_report,
                         context_text=context_text,
-                        core_rules=self.guard.core_rules
+                        core_rules=self.guard.core_rules,
                     )
-                    
+
                     if current_text.strip() == previous_text.strip():
                         break
-                        
-                    is_compliant, feedback_report = self.guard.analyze_and_report(current_text)
-                    
+
+                    dictionary_compliant, feedback_report = (
+                        self.guard.analyze_and_report(current_text)
+                    )
+
+                    style_result = validate_ste100_style(
+                        answer=current_text,
+                        template_type=template_type,
+                        require_safety_marker=str(template_type).lower() == "safety",
+                    )
+
+                    style_feedback = style_result.get("feedback", [])
+                    feedback_report = feedback_report + style_feedback
+                    is_compliant = dictionary_compliant and style_result["passed"]
+
                 final_text = current_text
-                was_corrected = True
+                was_corrected = retries > 0
 
         return final_text, context_text, is_compliant, was_corrected, feedback_report, sources

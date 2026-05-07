@@ -13,6 +13,7 @@ from eval_text_utils import (
 )
 from src.rag_engine import RAGEngine
 from src.utils import load_config
+from src.ste100_style_validator import validate_ste100_style
 
 
 logging.basicConfig(
@@ -218,41 +219,13 @@ def evaluate_template_style(
     template_type: str,
     case: Dict[str, Any],
 ) -> Dict[str, Any]:
-    limits = get_style_limits(template_type, case)
-    sentence_result = evaluate_sentence_lengths(
+    return validate_ste100_style(
         answer=answer,
-        max_words=limits["max_words_per_sentence"],
+        template_type=template_type,
+        min_instruction_lines=case.get("min_instruction_lines"),
+        max_words_per_sentence=case.get("max_words_per_sentence"),
+        require_safety_marker=bool(case.get("require_safety_marker", False)),
     )
-
-    instruction_line_count = count_instruction_lines(answer)
-    min_instruction_lines = limits["min_instruction_lines"]
-
-    if str(template_type).lower() == "procedure":
-        instruction_like = instruction_line_count >= min_instruction_lines
-    else:
-        instruction_like = True
-
-    require_safety_marker = bool(case.get("require_safety_marker", False))
-
-    if str(template_type).lower() == "safety" and require_safety_marker:
-        safety_marker_ok = has_safety_marker(answer)
-    else:
-        safety_marker_ok = True
-
-    passed = (
-        sentence_result["passed"]
-        and instruction_like
-        and safety_marker_ok
-    )
-
-    return {
-        "passed": passed,
-        "sentence_length_ok": sentence_result["passed"],
-        "sentence_violations": sentence_result["violations"],
-        "instruction_line_count": instruction_line_count,
-        "instruction_like": instruction_like,
-        "safety_marker_ok": safety_marker_ok,
-    }
 
 
 def evaluate_single_mode(
