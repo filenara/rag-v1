@@ -133,15 +133,34 @@ FORBIDDEN_OUTPUT_MARKERS = [
     "the procedure should",
     "the descriptive text must",
     "the safety text must",
+    "plan:",
+    "i must ignore",
+    "image provided in the context",
+    "the image provided in the context",
+    "provided in the context",
+    "conflicts with the text source",
+    "primary authority",
+    "text source is the primary authority",
 ]
 
 
 def detect_forbidden_output_markers(text: Any) -> List[str]:
-    normalized = str(text or "").lower()
+    raw_text = str(text or "")
+    normalized = raw_text.lower()
     violations = []
 
     for marker in FORBIDDEN_OUTPUT_MARKERS:
         if marker in normalized:
             violations.append(marker)
 
-    return violations
+    line_patterns = {
+        r"^\s*tags\.\s*$": "tags.",
+        r"^\s*plan\s*:\s*$": "plan:",
+    }
+
+    for line in raw_text.splitlines():
+        for pattern, label in line_patterns.items():
+            if re.match(pattern, line.strip(), flags=re.IGNORECASE):
+                violations.append(label)
+
+    return sorted(set(violations))

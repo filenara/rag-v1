@@ -354,6 +354,10 @@ def print_mode_result(index: int, result: Dict[str, Any]) -> None:
     print(f"Instruction-like: {style_result['instruction_like']}")
     print(f"Instruction lines: {style_result['instruction_line_count']}")
     print(f"Safety marker OK: {style_result['safety_marker_ok']}")
+    print(
+        "Output hygiene OK: "
+        f"{style_result.get('output_hygiene_ok', True)}"
+    )
 
     if result.get("include_hits"):
         print("Include hits:")
@@ -381,6 +385,11 @@ def print_mode_result(index: int, result: Dict[str, Any]) -> None:
     if result.get("reasoning_violations"):
         print("Reasoning or prompt leakage markers:")
         for marker in result["reasoning_violations"]:
+            print(f"  - {marker}")
+    
+    if style_result.get("output_hygiene_violations"):
+        print("Output hygiene violations:")
+        for marker in style_result["output_hygiene_violations"]:
             print(f"  - {marker}")
 
     print("Final answer:")

@@ -223,6 +223,15 @@ class RAGEngine:
             "the procedure should",
             "the descriptive text must",
             "the safety text must",
+            "tags.",
+            "plan:",
+            "i must ignore",
+            "image provided in the context",
+            "the image provided in the context",
+            "provided in the context",
+            "conflicts with the text source",
+            "primary authority",
+            "text source is the primary authority",
         ]
 
         return any(marker in normalized for marker in reasoning_markers)
@@ -279,6 +288,15 @@ class RAGEngine:
             "key information to include",
             "xml structure",
             "` tags",
+            "tags.",
+            "plan:",
+            "i must ignore",
+            "image provided in the context",
+            "the image provided in the context",
+            "provided in the context",
+            "conflicts with the text source",
+            "primary authority",
+            "text source is the primary authority",
             "sentence 1:",
             "sentence 2:",
             "sentence 3:",
@@ -313,18 +331,30 @@ class RAGEngine:
         lines = cleaned.splitlines()
         cleaned_lines = []
         skipping_leading_plan = True
+        inside_leading_plan_block = False
+
+        plan_list_pattern = re.compile(
+            r"^\s*(?:\d+[\).\s-]+|[-*•]\s+)",
+            flags=re.IGNORECASE,
+        )
 
         for line in lines:
             stripped = line.strip()
 
-            if skipping_leading_plan and (
-                not stripped
-                or has_plan_marker(stripped)
-                or re.match(r"^[-*•]\s+", stripped)
-            ):
-                continue
+            if skipping_leading_plan:
+                if not stripped:
+                    continue
 
-            skipping_leading_plan = False
+                if has_plan_marker(stripped):
+                    if re.match(r"^\s*plan\s*:\s*$", stripped, flags=re.IGNORECASE):
+                        inside_leading_plan_block = True
+                    continue
+
+                if inside_leading_plan_block and plan_list_pattern.match(stripped):
+                    continue
+
+                skipping_leading_plan = False
+
             cleaned_lines.append(line)
 
         return "\n".join(cleaned_lines).strip()
@@ -350,6 +380,15 @@ class RAGEngine:
             "the procedure should",
             "the descriptive text must",
             "the safety text must",
+            "tags.",
+            "plan:",
+            "i must ignore",
+            "image provided in the context",
+            "the image provided in the context",
+            "provided in the context",
+            "conflicts with the text source",
+            "primary authority",
+            "text source is the primary authority",
         ]
 
         return any(marker in normalized for marker in prompt_leak_markers)

@@ -111,6 +111,43 @@ def has_safety_marker(answer: str) -> bool:
 
     return any(marker in normalized for marker in markers)
 
+INTERNAL_OUTPUT_MARKERS = [
+    "i must ignore",
+    "image provided in the context",
+    "the image provided in the context",
+    "provided in the context",
+    "conflicts with the text source",
+    "primary authority",
+    "text source is the primary authority",
+    "i need to",
+    "i will",
+    "key information to include",
+    "xml structure",
+    "` tags",
+]
+
+INTERNAL_OUTPUT_LINE_PATTERNS = [
+    r"^\s*tags\.\s*$",
+    r"^\s*plan\s*:\s*$",
+]
+
+
+def detect_internal_output_markers(text: Any) -> List[str]:
+    raw_text = str(text or "")
+    normalized = raw_text.lower()
+    violations = []
+
+    for marker in INTERNAL_OUTPUT_MARKERS:
+        if marker in normalized:
+            violations.append(marker)
+
+    for line in raw_text.splitlines():
+        for pattern in INTERNAL_OUTPUT_LINE_PATTERNS:
+            if re.match(pattern, line.strip(), flags=re.IGNORECASE):
+                violations.append(pattern)
+
+    return sorted(set(violations))
+
 
 def get_default_style_limits(
     template_type: str,
@@ -150,6 +187,7 @@ def validate_ste100_style(
     min_instruction_lines: Optional[int] = None,
     max_words_per_sentence: Optional[int] = None,
     require_safety_marker: bool = False,
+    require_output_hygiene: bool = True,
 ) -> Dict[str, Any]:
     limits = get_default_style_limits(
         template_type=template_type,
@@ -179,6 +217,13 @@ def validate_ste100_style(
 
     feedback = []
 
+    if require_output_hygiene:
+        output_hygiene_violations = detect_internal_output_markers(answer)
+    else:
+        output_hygiene_violations = []
+
+    output_hygiene_ok = len(output_hygiene_violations) == 0
+
     if not sentence_result["passed"]:
         feedback.append(
             "Write short sentences. Use a maximum of "
@@ -198,10 +243,17 @@ def validate_ste100_style(
             "WARNING, CAUTION, or DANGER."
         )
 
+    if not output_hygiene_ok:
+        feedback.append(
+            "Remove internal planning, prompt fragments, context analysis, "
+            "and non-answer text from the final output."
+        )
+
     passed = (
         sentence_result["passed"]
         and instruction_like
         and safety_marker_ok
+        and output_hygiene_ok
     )
 
     return {
@@ -212,4 +264,6 @@ def validate_ste100_style(
         "instruction_like": instruction_like,
         "safety_marker_ok": safety_marker_ok,
         "feedback": feedback,
+        "output_hygiene_ok": output_hygiene_ok,
+        "output_hygiene_violations": output_hygiene_violations,
     }
