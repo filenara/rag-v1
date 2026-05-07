@@ -794,13 +794,54 @@ class RAGEngine:
 
         doc_scores = execute_retrieval(where_clause)
 
+        logger.info(
+            "[RetrievalDebug] query=%r source_filter=%r "
+            "doc_scores_count=%s n_results=%s top_k_rerank=%s",
+            query,
+            source_filter,
+            len(doc_scores),
+            self.n_results,
+            self.top_k_rerank,
+        )
+
         sorted_candidates = sorted(
             doc_scores.items(),
             key=lambda item: item[1],
             reverse=True,
         )[:self.top_k_rerank]
 
+        logger.info(
+            "[RetrievalDebug] sorted_candidates_count=%s",
+            len(sorted_candidates),
+        )
+
+        for debug_rank, (debug_doc_id, debug_rrf_score) in enumerate(
+            sorted_candidates[:10],
+            start=1,
+        ):
+            debug_meta = self.doc_meta_map.get(debug_doc_id, {})
+            debug_source = os.path.basename(
+                debug_meta.get("source", "Unknown")
+            )
+            debug_page = debug_meta.get("page", "?")
+            debug_parent = debug_meta.get("parent_context", "")
+
+            logger.info(
+                "[RetrievalDebug] candidate rank=%s source=%r page=%r "
+                "context=%r rrf_score=%.6f doc_id=%r",
+                debug_rank,
+                debug_source,
+                debug_page,
+                debug_parent,
+                float(debug_rrf_score),
+                debug_doc_id,
+            )
+
         if not sorted_candidates:
+            logger.info(
+                "[RetrievalDebug] no sorted candidates. Returning empty "
+                "context."
+            )
             return "", [], None
 
         valid_candidates = []
@@ -819,7 +860,16 @@ class RAGEngine:
                     }
                 )
 
+        logger.info(
+            "[RetrievalDebug] valid_candidates_count=%s",
+            len(valid_candidates),
+        )
+
         if not valid_candidates:
+            logger.info(
+                "[RetrievalDebug] no valid candidates after text lookup. "
+                "Returning empty context."
+            )
             return "", [], None
 
         pairs = [
@@ -837,14 +887,47 @@ class RAGEngine:
             for candidate in valid_candidates
         )
 
+        logger.info(
+            "[RetrievalDebug] reranker_scores_count=%s best_score=%.6f "
+            "min_rerank_score=%.6f best_rrf_score=%.6f "
+            "fallback_enabled=%s fallback_min_rrf_score=%.6f",
+            len(scores),
+            best_score,
+            float(self.min_rerank_score),
+            best_rrf_score,
+            self.enable_low_score_fallback,
+            float(self.fallback_min_rrf_score),
+        )
+
+        for debug_idx, debug_score in enumerate(scores):
+            debug_candidate = valid_candidates[debug_idx]
+            debug_meta = debug_candidate.get("meta", {})
+            debug_source = os.path.basename(
+                debug_meta.get("source", "Unknown")
+            )
+            debug_page = debug_meta.get("page", "?")
+            debug_parent = debug_meta.get("parent_context", "")
+
+            logger.info(
+                "[RetrievalDebug] rerank rank=%s source=%r page=%r "
+                "context=%r rerank_score=%.6f rrf_score=%.6f",
+                debug_idx + 1,
+                debug_source,
+                debug_page,
+                debug_parent,
+                float(debug_score),
+                float(debug_candidate.get("rrf_score", 0.0)),
+            )
+
         if best_score < self.min_rerank_score:
             if (
                 not self.enable_low_score_fallback
                 or best_rrf_score < self.fallback_min_rrf_score
             ):
                 logger.info(
-                    "Rerank skoru esik altinda. best_score=%s, "
-                    "threshold=%s, best_rrf_score=%s, fallback_enabled=%s",
+                    "[RetrievalDebug] rejected by rerank threshold. "
+                    "best_score=%s, threshold=%s, best_rrf_score=%s, "
+                    "fallback_enabled=%s",
                     best_score,
                     self.min_rerank_score,
                     best_rrf_score,
@@ -853,7 +936,8 @@ class RAGEngine:
                 return "", [], None
 
             logger.warning(
-                "Low-score retrieval fallback aktif. best_score=%s, "
+                "[RetrievalDebug] low-score retrieval fallback active. "
+                "best_score=%s, "
                 "threshold=%s, best_rrf_score=%s, fallback_min_rrf_score=%s",
                 best_score,
                 self.min_rerank_score,
@@ -862,6 +946,12 @@ class RAGEngine:
             )
 
         top_indices = np.argsort(scores)[::-1][:top_k_context]
+
+        logger.info(
+            "[RetrievalDebug] selected_top_indices=%s top_k_context=%s",
+            [int(index) for index in top_indices],
+            top_k_context,
+        )
 
         context_texts = []
         sources = []
