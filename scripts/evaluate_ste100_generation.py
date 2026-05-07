@@ -116,16 +116,66 @@ def evaluate_sentence_lengths(
     }
 
 
-def count_instruction_lines(answer: str) -> int:
-    instruction_pattern = re.compile(
+def is_imperative_like_line(line: str) -> bool:
+    stripped = line.strip()
+
+    if not stripped:
+        return False
+
+    numbered_or_bulleted = re.match(
         r"^\s*(?:\d+[\).\s-]+|[A-Z][\).\s-]+|[-*•]\s+)",
+        stripped,
         flags=re.IGNORECASE,
     )
 
+    if numbered_or_bulleted:
+        return True
+
+    words = re.findall(r"[A-Za-z][A-Za-z-]*", stripped)
+
+    if not words:
+        return False
+
+    first_word = words[0].lower()
+
+    imperative_starters = {
+        "adjust",
+        "apply",
+        "attach",
+        "calibrate",
+        "check",
+        "clean",
+        "close",
+        "connect",
+        "disconnect",
+        "do",
+        "examine",
+        "install",
+        "make",
+        "measure",
+        "move",
+        "open",
+        "perform",
+        "press",
+        "remove",
+        "replace",
+        "set",
+        "start",
+        "stop",
+        "turn",
+        "use",
+        "verify",
+        "write",
+    }
+
+    return first_word in imperative_starters
+
+
+def count_instruction_lines(answer: str) -> int:
     count = 0
 
     for line in str(answer or "").splitlines():
-        if instruction_pattern.search(line):
+        if is_imperative_like_line(line):
             count += 1
 
     return count
