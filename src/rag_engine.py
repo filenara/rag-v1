@@ -404,6 +404,22 @@ class RAGEngine:
 
         return any(marker in normalized for marker in not_found_markers)
 
+    def _preview_debug_text(
+        self,
+        value: object,
+        limit: int = 1200,
+    ) -> str:
+        text = str(value or "")
+        text = re.sub(r"\s+", " ", text).strip()
+
+        if len(text) > limit:
+            return (
+                f"{text[:limit]}... "
+                f"[truncated, total_chars={len(text)}]"
+            )
+
+        return text
+
     def _parse_json_response(self, raw_text: str) -> dict:
         cleaned_text = self._clean_output(raw_text).strip()
 
@@ -1097,11 +1113,30 @@ class RAGEngine:
                     break
 
         if logical_intent == "SEARCH":
-            context_text, sources, input_image = self.retrieve_context(
-                query=standalone_query,
-                collection_name=collection_name,
-                source_filter=source_filter,
+            logger.info(
+                "[GenerationDebug] retrieval completed. "
+                "standalone_query=%r context_length=%s sources_count=%s",
+                standalone_query,
+                len(context_text or ""),
+                len(sources or []),
             )
+
+            logger.info(
+                "[GenerationDebug] context_preview=%r",
+                self._preview_debug_text(context_text, limit=2000),
+            )
+
+            for source_index, source in enumerate(sources or [], start=1):
+                logger.info(
+                    "[GenerationDebug] source index=%s source=%r page=%r "
+                    "context=%r rerank_score=%s rrf_score=%s",
+                    source_index,
+                    source.get("source", "Unknown"),
+                    source.get("page", "?"),
+                    source.get("parent_context", ""),
+                    source.get("rerank_score", None),
+                    source.get("rrf_score", None),
+                )
 
             if not context_text.strip():
                 return (
@@ -1125,9 +1160,34 @@ class RAGEngine:
             history_text_formatted = "No previous conversation."
 
         if use_ste100 and logical_intent == "SEARCH":
-            logger.info("Dinamik STE100 promptu uretiliyor. Format: %s", template_type)
-            persona = self.prompts.get("system_persona", "You are a technical assistant.")
-            dynamic_rules = self.guard.build_injection_prompt(context_text, template_type)
+            logger.info(
+                "Dinamik STE100 promptu uretiliyor. Format: %s",
+                template_type,
+            )
+            persona = self.prompts.get(
+                "system_persona",
+                "You are a technical assistant.",
+            )
+            dynamic_rules = self.guard.build_injection_prompt(
+                context_text,
+                template_type,
+            )
+
+            logger.info(
+                "[GenerationDebug] ste100_prompt_state "
+                "template_type=%r strict_mode=%s context_length=%s "
+                "sources_count=%s",
+                template_type,
+                strict_mode,
+                len(context_text or ""),
+                len(sources or []),
+            )
+
+            logger.info(
+                "[GenerationDebug] dynamic_rules_preview=%r",
+                self._preview_debug_text(dynamic_rules, limit=2000),
+            )
+
             system_instruction = f"{persona}\n\n{dynamic_rules}"
         else:
             system_instruction = self.prompts.get("system_persona_standard", "You are a technical assistant.")
@@ -1143,7 +1203,21 @@ class RAGEngine:
         user_prompt_text = base_template.format(
             history_text=history_text_formatted.strip(),
             context_text=context_text,
-            query=query
+            query=query,
+        )
+
+        logger.info(
+            "[GenerationDebug] user_prompt_state "
+            "original_query=%r generation_query=%r "
+            "user_prompt_length=%s",
+            query,
+            query,
+            len(user_prompt_text or ""),
+        )
+
+        logger.info(
+            "[GenerationDebug] user_prompt_preview=%r",
+            self._preview_debug_text(user_prompt_text, limit=2500),
         )
 
         user_content = []
