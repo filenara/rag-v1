@@ -1212,6 +1212,60 @@ class RAGEngine:
             query=query,
         )
 
+        answer_only_contract = """
+<output_contract>
+/no_think
+Your complete response must be one <answer> block and nothing else.
+Do not output <thinking>, <think>, analysis, reasoning, plan, scratchpad, notes, or hidden reasoning.
+Do not explain how you prepared the answer.
+Do not include labels such as "Final answer", "Plan", or "Reasoning".
+Put the final answer between <answer> and </answer>.
+
+<evidence_policy>
+Use only facts that are explicitly present in the document context.
+If the context gives factual evidence about the requested subject, use that evidence to write the requested ASD-STE100 output.
+The source text does not have to be written as a procedure, warning, caution, or description.
+You may transform explicit document facts into procedure lines, descriptive text, warnings, or cautions.
+Do not add missing steps, tools, torque values, materials, limits, conditions, warnings, acceptance criteria, or sequence information.
+Return not-found only when the context contains no factual evidence about the requested subject.
+</evidence_policy>
+
+<procedure_policy>
+For procedure output, write each required action as a direct instruction line.
+Start instruction lines with an imperative verb when possible.
+Convert explicit requirements, intervals, specifications, prohibitions, connections, and limits into direct instruction lines.
+Do not write a descriptive requirement sentence when the same fact can be written as an instruction.
+If the context gives a prohibition, write it as a caution or a direct negative instruction.
+</procedure_policy>
+
+<descriptive_policy>
+For descriptive output, describe only the explicitly stated features, functions, interfaces, limits, operating modes, and specifications.
+Do not turn descriptive output into a procedure unless the user asks for a procedure.
+</descriptive_policy>
+
+<safety_policy>
+For safety output, include all explicit warnings, cautions, hazards, classifications, limits, ranges, and threshold values that are directly related to the requested safety subject.
+If the context gives a related minimum, typical, maximum, range, transient value, operating value, or classification, include the relevant values.
+Do not include only one limit when the context gives a related set of safety-critical limits.
+Do not invent safety instructions that are not supported by the context.
+</safety_policy>
+
+<critical_value_policy>
+Preserve critical identifiers, values, and units exactly as written in the context when they are relevant to the requested subject.
+Critical information includes part names, component names, cable names, connector names, pin names, signal names, model names, specification codes, extension numbers, voltage values, current values, frequency values, torque values, dimensions, tolerances, time intervals, classification labels, ranges, and thresholds.
+Do not omit relevant critical information when it is explicitly present in the context.
+Do not replace a precise technical identifier with a less precise paraphrase.
+</critical_value_policy>
+
+If the answer is not found in the provided document context, write exactly:
+<answer>Information not found in provided fragment.</answer>
+</output_contract>
+""".strip()
+
+        user_prompt_text = (
+            f"{user_prompt_text}\n\n{answer_only_contract}"
+        )
+
         logger.info(
             "[GenerationDebug] user_prompt_state "
             "original_query=%r generation_query=%r "
