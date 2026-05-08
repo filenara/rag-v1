@@ -1113,6 +1113,12 @@ class RAGEngine:
                     break
 
         if logical_intent == "SEARCH":
+            context_text, sources, input_image = self.retrieve_context(
+                query=standalone_query,
+                collection_name=collection_name,
+                source_filter=source_filter,
+            )
+
             logger.info(
                 "[GenerationDebug] retrieval completed. "
                 "standalone_query=%r context_length=%s sources_count=%s",
