@@ -420,6 +420,333 @@ class RAGEngine:
 
         return text
 
+    def _get_ste100_top_k_context(self, template_type: str) -> int:
+        template = str(template_type or "").strip().lower()
+
+        if template == "safety":
+            return 3
+
+        if template == "procedure":
+            return 3
+
+        if template == "descriptive":
+            return 3
+
+        return 3
+
+    def _get_ste100_generation_max_tokens(self, template_type: str) -> int:
+        template = str(template_type or "").strip().lower()
+
+        if template == "safety":
+            return 768
+
+        if template == "procedure":
+            return 768
+
+        if template == "descriptive":
+            return 1024
+
+        return 1024
+
+    def _get_ste100_context_budget_chars(self, template_type: str) -> int:
+        template = str(template_type or "").strip().lower()
+
+        if template == "safety":
+            return 5500
+
+        if template == "procedure":
+            return 4500
+
+        if template == "descriptive":
+            return 7000
+
+        return 6000
+
+    def _get_source_block_key(self, block_text: str) -> tuple:
+        match = re.search(
+            r"---\s*SOURCE:\s*(.*?)\s*\|\s*PAGE\s*([^-\n]+?)\s*---",
+            str(block_text or ""),
+            flags=re.IGNORECASE,
+        )
+
+        if not match:
+            return ("", "")
+
+        source_name = os.path.basename(match.group(1).strip()).lower()
+        page = str(match.group(2).strip()).lower()
+
+        return (source_name, page)
+
+    def _get_source_meta_key(self, source: dict) -> tuple:
+        source_name = os.path.basename(
+            str(source.get("source", "") or "")
+        ).lower()
+        page = str(source.get("page", "") or "").strip().lower()
+
+        return (source_name, page)
+
+    def _limit_ste100_context_budget(
+        self,
+        context_text: str,
+        sources: List[Dict],
+        template_type: str,
+    ) -> Tuple[str, List[Dict]]:
+        context = str(context_text or "").strip()
+
+        if not context:
+            return "", []
+
+        max_chars = self._get_ste100_context_budget_chars(template_type)
+
+        if len(context) <= max_chars:
+            return context, sources
+
+        source_blocks = re.split(r"(?=--- SOURCE:)", context)
+        selected_blocks = []
+        selected_source_keys = []
+        current_length = 0
+
+        for block in source_blocks:
+            block = block.strip()
+
+            if not block:
+                continue
+
+            separator_length = 2 if selected_blocks else 0
+            candidate_length = len(block) + separator_length
+
+            if current_length + candidate_length <= max_chars:
+                selected_blocks.append(block)
+                current_length += candidate_length
+
+                block_key = self._get_source_block_key(block)
+                if block_key != ("", ""):
+                    selected_source_keys.append(block_key)
+
+                continue
+
+            if not selected_blocks:
+                trimmed_block = block[:max_chars].rstrip()
+                selected_blocks.append(trimmed_block)
+
+                block_key = self._get_source_block_key(trimmed_block)
+                if block_key != ("", ""):
+                    selected_source_keys.append(block_key)
+
+            break
+
+        trimmed_context = "\n\n".join(selected_blocks).strip()
+
+        if selected_source_keys:
+            selected_source_key_set = set(selected_source_keys)
+            filtered_sources = [
+                source
+                for source in sources
+                if self._get_source_meta_key(source) in selected_source_key_set
+            ]
+        else:
+            filtered_sources = sources
+
+        logger.info(
+            "[GenerationDebug] STE100 context budget applied. "
+            "template_type=%r original_chars=%s trimmed_chars=%s "
+            "budget_chars=%s original_sources=%s filtered_sources=%s",
+            template_type,
+            len(context),
+            len(trimmed_context),
+            max_chars,
+            len(sources or []),
+            len(filtered_sources or []),
+        )
+
+        return trimmed_context, filtered_sources
+
+    def _normalize_grounding_unit(self, value: str) -> str:
+        normalized = str(value or "").lower()
+        normalized = normalized.replace("μ", "u")
+        normalized = re.sub(r"\s+", " ", normalized)
+        return normalized.strip()
+
+    def _token_exists_in_unit(self, token: str, unit_text: str) -> bool:
+        token = self._normalize_grounding_unit(token)
+        unit_text = self._normalize_grounding_unit(unit_text)
+
+        if not token or not unit_text:
+            return False
+
+        if re.search(r"[^a-z0-9]", token):
+            return token in unit_text
+
+        pattern = rf"(?<![a-z0-9]){re.escape(token)}(?![a-z0-9])"
+        return re.search(pattern, unit_text) is not None
+
+    def _is_technical_grounding_token(self, token: str) -> bool:
+        token = str(token or "").strip()
+
+        if not token:
+            return False
+
+        token_lower = token.lower()
+
+        generic_stop_tokens = {
+            "a", "an", "and", "as", "at", "be", "by", "for", "from",
+            "in", "into", "is", "it", "of", "on", "or", "the", "to",
+            "use", "uses", "using", "with", "while", "when",
+            "connect", "connected", "connecting", "connection",
+            "pin", "pins", "wire", "wires", "signal", "signals",
+            "interface", "port", "serial", "input", "output",
+            "system", "device", "unit", "part", "component",
+        }
+
+        if token_lower in generic_stop_tokens:
+            return False
+
+        has_digit = any(char.isdigit() for char in token)
+        has_upper = any(char.isupper() for char in token)
+        has_symbol = bool(re.search(r"[./_+-]", token))
+
+        if has_digit:
+            return True
+
+        if has_symbol:
+            return True
+
+        if has_upper and len(token) <= 12:
+            return True
+
+        if token.isupper() and len(token) >= 2:
+            return True
+
+        return False
+
+    def _extract_grounding_tokens_from_claim(self, claim: str) -> List[str]:
+        raw_tokens = re.findall(
+            r"[A-Za-z0-9][A-Za-z0-9./_+-]*",
+            str(claim or ""),
+        )
+
+        tokens = []
+
+        for raw_token in raw_tokens:
+            if self._is_technical_grounding_token(raw_token):
+                tokens.append(raw_token.lower())
+
+        deduplicated_tokens = []
+        seen = set()
+
+        for token in tokens:
+            if token not in seen:
+                deduplicated_tokens.append(token)
+                seen.add(token)
+
+        return deduplicated_tokens
+
+    def _build_context_evidence_units(self, context_text: str) -> List[str]:
+        context = str(context_text or "")
+        units = []
+
+        for line in context.splitlines():
+            line = line.strip()
+
+            if not line:
+                continue
+
+            units.append(line)
+
+            if "|" in line:
+                cells = [
+                    cell.strip()
+                    for cell in line.split("|")
+                    if cell.strip()
+                ]
+
+                if cells:
+                    units.append(" ".join(cells))
+
+        compact_context = re.sub(r"\s+", " ", context)
+        sentence_candidates = re.split(r"(?<=[.!?])\s+", compact_context)
+
+        for sentence in sentence_candidates:
+            sentence = sentence.strip()
+
+            if sentence:
+                units.append(sentence)
+
+        return units
+
+    def _is_claim_supported_by_evidence_unit(
+        self,
+        claim: str,
+        context_text: str,
+    ) -> bool:
+        tokens = self._extract_grounding_tokens_from_claim(claim)
+
+        if len(tokens) < 1:
+            logger.info(
+                "[VerifierFallback] claim has insufficient grounding tokens. "
+                "claim=%r tokens=%s",
+                claim,
+                tokens,
+            )
+            return False
+
+        evidence_units = self._build_context_evidence_units(context_text)
+
+        for unit in evidence_units:
+            if all(
+                self._token_exists_in_unit(token, unit)
+                for token in tokens
+            ):
+                logger.info(
+                    "[VerifierFallback] claim accepted by deterministic "
+                    "evidence unit. claim=%r tokens=%s evidence=%r",
+                    claim,
+                    tokens,
+                    self._preview_debug_text(unit, limit=500),
+                )
+                return True
+
+        logger.info(
+            "[VerifierFallback] claim not supported by deterministic "
+            "evidence units. claim=%r tokens=%s",
+            claim,
+            tokens,
+        )
+
+        return False
+
+    def _are_unsupported_claims_context_grounded(
+        self,
+        unsupported_claims: object,
+        context_text: str,
+    ) -> bool:
+        if not unsupported_claims:
+            return False
+
+        if isinstance(unsupported_claims, str):
+            claims = [unsupported_claims]
+        elif isinstance(unsupported_claims, list):
+            claims = [
+                str(claim)
+                for claim in unsupported_claims
+                if str(claim).strip()
+            ]
+        else:
+            return False
+
+        if not claims:
+            return False
+
+        for claim in claims:
+            if not self._is_claim_supported_by_evidence_unit(
+                claim=claim,
+                context_text=context_text,
+            ):
+                return False
+
+        return True
+
+
     def _parse_json_response(self, raw_text: str) -> dict:
         cleaned_text = self._clean_output(raw_text).strip()
 
@@ -738,6 +1065,17 @@ class RAGEngine:
             verdict,
             unsupported_claims,
         )
+
+        if self._are_unsupported_claims_context_grounded(
+            unsupported_claims=unsupported_claims,
+            context_text=context_text,
+        ):
+            logger.warning(
+                "Verifier fallback accepted table-grounded unsupported "
+                "claims. unsupported_claims=%s",
+                unsupported_claims,
+            )
+            return True
 
         return False
     
@@ -1113,12 +1451,25 @@ class RAGEngine:
                     break
 
         if logical_intent == "SEARCH":
+            top_k_context = (
+                self._get_ste100_top_k_context(template_type)
+                if use_ste100
+                else 3
+            )
+
             context_text, sources, input_image = self.retrieve_context(
                 query=standalone_query,
                 collection_name=collection_name,
                 source_filter=source_filter,
+                top_k_context=top_k_context,
             )
 
+            if use_ste100:
+                context_text, sources = self._limit_ste100_context_budget(
+                    context_text=context_text,
+                    sources=sources,
+                    template_type=template_type,
+                )
             logger.info(
                 "[GenerationDebug] retrieval completed. "
                 "standalone_query=%r context_length=%s sources_count=%s",
@@ -1289,7 +1640,16 @@ If the answer is not found in the provided document context, write exactly:
         messages.append({"role": "user", "content": user_content})
         
         try:
-            raw_text = self._generate_api(messages, max_tokens=2048)
+            generation_max_tokens = (
+                self._get_ste100_generation_max_tokens(template_type)
+                if use_ste100
+                else 2048
+            )
+
+            raw_text = self._generate_api(
+                messages,
+                max_tokens=generation_max_tokens,
+            )
             logger.info(
                 "[GenerationDebug] raw_model_output_preview=%r",
                 self._preview_debug_text(raw_text, limit=2500),
